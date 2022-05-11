@@ -57,7 +57,7 @@ option(EXTERNAL_PROTOZERO "Do not use the bundled protozero" OFF)
 option(EXTERNAL_FMT       "Do not use the bundled fmt"       OFF)
 option(EXTERNAL_RAPIDJSON "Do not use the bundled rapidjson" OFF)
 
-set(USE_PROJ_LIB "auto" CACHE STRING "Which version of PROJ API to use: ('4', '6', 'off', or 'auto')")
+set(USE_PROJ_LIB "6" CACHE STRING "Which version of PROJ API to use: ('4', '6', 'off', or 'auto')")
 
 if (NOT WIN32 AND NOT APPLE)
     # No need for this path, just a workaround to make cmake work on all systems.

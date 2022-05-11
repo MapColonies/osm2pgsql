@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <proj.h>
 
 #include "expire-tiles.hpp"
 #include "format.hpp"
@@ -92,12 +93,21 @@ uint32_t expire_tiles::normalise_tile_x_coord(int x) const
     return static_cast<uint32_t>(x);
 }
 
+auto pj = proj_create_crs_to_crs(0, "EPSG:4326", "EPSG:3857", 0);
+
 geom::point_t expire_tiles::coords_to_tile(geom::point_t const &point)
 {
     auto const c = m_projection->target_to_tile(point);
 
-    return {m_map_width * (0.5 + c.x() / tile_t::earth_circumference),
-            m_map_width * (0.5 - c.y() / tile_t::earth_circumference)};
+    PJ_COORD coord;
+    coord.lp.lam = c.y();
+    coord.lp.phi = c.x();
+    
+    auto const mercator_point = proj_trans(pj, PJ_DIRECTION::PJ_FWD ,coord);
+
+
+    return {m_map_width * (0.5 + mercator_point.xy.x / tile_t::earth_circumference),
+            m_map_width * (0.5 - mercator_point.xy.y / tile_t::earth_circumference)};
 }
 
 void expire_tiles::from_point_list(geom::point_list_t const &list)
@@ -109,9 +119,9 @@ void expire_tiles::from_point_list(geom::point_list_t const &list)
 
 void expire_tiles::from_geometry(geom::geometry_t const &geom, osmid_t osm_id)
 {
-    if (geom.srid() != 3857) {
-        return;
-    }
+    // if (geom.srid() != 3857) {
+    //     return;
+    // }
 
     if (geom.is_point()) {
         auto const box = geom::envelope(geom);
