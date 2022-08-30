@@ -61,7 +61,7 @@ static double calculate_area(bool reproject_area,
 void output_pgsql_t::pgsql_out_way(osmium::Way const &way, taglist_t *tags,
                                    bool polygon, bool roads)
 {
-    if (polygon && way.is_closed()) {
+    if (polygon && !way.nodes().empty() && way.is_closed()) {
         auto const geom = geom::create_polygon(way);
         auto const projected_geom = geom::transform(geom, *m_proj);
 
@@ -268,7 +268,7 @@ void output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel)
         if (!projected_geom.is_null() && split_at > 0.0) {
             projected_geom = geom::segmentize(projected_geom, split_at);
         }
-        auto const geoms = geom::split_multi(projected_geom);
+        auto const geoms = geom::split_multi(std::move(projected_geom));
         for (auto const &sgeom : geoms) {
             m_expire.from_geometry(sgeom, -rel.id());
             auto const wkb = geom_to_ewkb(sgeom);

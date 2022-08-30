@@ -36,7 +36,7 @@ The latest source code is available in the osm2pgsql git repository on GitHub
 and can be downloaded as follows:
 
 ```sh
-git clone git://github.com/openstreetmap/osm2pgsql.git
+git clone https://github.com/openstreetmap/osm2pgsql.git
 ```
 
 Osm2pgsql uses the cross-platform [CMake build system](https://cmake.org/)
@@ -48,7 +48,8 @@ Required libraries are
 * [proj](https://proj.org/)
 * [bzip2](http://www.bzip.org/)
 * [zlib](https://www.zlib.net/)
-* [Boost libraries](https://www.boost.org/), including system and filesystem
+* [Boost libraries](https://www.boost.org/), including geometry, system and
+  filesystem
 * [PostgreSQL](https://www.postgresql.org/) client libraries
 * [Lua](https://www.lua.org/) (Optional, used for Lua tag transforms
   and the flex output)
@@ -65,7 +66,7 @@ with other versions of those libraries (set the `EXTERNAL_*libname*` option to
 * [rapidjson](https://rapidjson.org/) (>= 1.1.0)
 
 It also requires access to a database server running
-[PostgreSQL](https://www.postgresql.org/) 9.5+ and
+[PostgreSQL](https://www.postgresql.org/) 9.6+ and
 [PostGIS](https://www.postgis.net/) 2.2+.
 
 Make sure you have installed the development packages for the libraries
@@ -153,7 +154,7 @@ cmake .. -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS=ON
 ```
 
 Note that `Debug` builds will be much slower than release build. For production
-use `Release` or `RelWithDebInfo` builds are recommended.
+`Release` or `RelWithDebInfo` builds are recommended.
 
 ### Using the PROJ library
 

@@ -9,16 +9,14 @@
 
 #include "geom.hpp"
 
-#include <algorithm>
-
 namespace geom {
 
-bool operator==(point_list_t const &a, point_list_t const &b) noexcept
+bool operator==(polygon_t const &a, polygon_t const &b) noexcept
 {
-    return std::equal(a.cbegin(), a.cend(), b.cbegin(), b.cend());
+    return (a.outer() == b.outer()) && (a.inners() == b.inners());
 }
 
-bool operator!=(point_list_t const &a, point_list_t const &b) noexcept
+bool operator!=(polygon_t const &a, polygon_t const &b) noexcept
 {
     return !(a == b);
 }

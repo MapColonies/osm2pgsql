@@ -1,7 +1,7 @@
 
 cmake_minimum_required(VERSION 3.5.0)
 
-project(osm2pgsql VERSION 1.6.0 LANGUAGES CXX C)
+project(osm2pgsql VERSION 1.7.0 LANGUAGES CXX C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -314,6 +314,10 @@ if (BUILD_TESTS)
         set(TESTING_TIMEOUT 1200)
     endif()
     add_subdirectory(tests)
+    configure_file(
+        ${PROJECT_SOURCE_DIR}/tests/run-behave.in
+        ${PROJECT_BINARY_DIR}/run-behave
+    )
 else()
     message(STATUS "Tests disabled. Set BUILD_TESTS=ON to enable tests.")
 endif()

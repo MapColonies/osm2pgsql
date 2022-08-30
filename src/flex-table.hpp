@@ -110,7 +110,7 @@ public:
         return m_geom_column != std::numeric_limits<std::size_t>::max();
     }
 
-    // XXX should we allow several geometry columns?
+    /// Get the (first, if there are multiple) geometry column.
     flex_table_column_t const &geom_column() const noexcept
     {
         assert(has_geom_column());
@@ -191,6 +191,11 @@ public:
     std::string full_name() const;
     std::string full_tmp_name() const;
 
+    bool has_multiple_geom_columns() const noexcept
+    {
+        return m_has_multiple_geom_columns;
+    }
+
 private:
     /// The name of the table
     std::string m_name;
@@ -213,7 +218,10 @@ private:
      */
     std::vector<flex_table_column_t> m_columns;
 
-    /// Index of the geometry column in m_columns. Default means no geometry.
+    /**
+     * Index of the (first) geometry column in m_columns. Default means no
+     * geometry column.
+     */
     std::size_t m_geom_column = std::numeric_limits<std::size_t>::max();
 
     /**
@@ -224,6 +232,9 @@ private:
 
     /// Cluster the table by geometry.
     bool m_cluster_by_geom = true;
+
+    /// Does this table have more than one geometry column?
+    bool m_has_multiple_geom_columns = false;
 
 }; // class flex_table_t
 
@@ -252,6 +263,8 @@ public:
     void teardown() { m_db_connection.reset(); }
 
     void prepare();
+
+    void analyze();
 
     void create_id_index();
 

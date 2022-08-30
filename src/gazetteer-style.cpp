@@ -308,8 +308,13 @@ void gazetteer_style_t::process_tags(osmium::OSMObject const &o)
         char const *const v = item.value();
 
         if (std::strcmp(k, "admin_level") == 0) {
-            m_admin_level = std::atoi(v);
-            if (m_admin_level <= 0 || m_admin_level > MAX_ADMINLEVEL) {
+            char *endp = nullptr;
+            errno = 0;
+            auto const parsed = std::strtol(v, &endp, 10);
+            if (errno == 0 && *endp == '\0' && parsed > 0 &&
+                parsed < MAX_ADMINLEVEL) {
+                m_admin_level = static_cast<int>(parsed);
+            } else {
                 m_admin_level = MAX_ADMINLEVEL;
             }
             continue;
@@ -492,13 +497,13 @@ void gazetteer_style_t::copy_out(osmium::OSMObject const &o,
                 buffer->add_hash_elem("operator", m_operator);
                 first = false;
             }
-            for (auto const &entry : m_names) {
+            for (auto const &[key, value] : m_names) {
                 if (first) {
                     buffer->new_hash();
                     first = false;
                 }
 
-                buffer->add_hash_elem(entry.first, entry.second);
+                buffer->add_hash_elem(key, value);
             }
 
             if (first) {
@@ -514,21 +519,21 @@ void gazetteer_style_t::copy_out(osmium::OSMObject const &o,
             buffer->add_null_column();
         } else {
             buffer->new_hash();
-            for (auto const &a : m_address) {
-                if (std::strcmp(a.first, "tiger:county") == 0) {
+            for (auto const &[key, value] : m_address) {
+                if (std::strcmp(key, "tiger:county") == 0) {
                     std::string term;
-                    auto const *const end = std::strchr(a.second, ',');
+                    auto const *const end = std::strchr(value, ',');
                     if (end) {
                         auto const len =
-                            (std::string::size_type)(end - a.second);
-                        term = std::string(a.second, len);
+                            (std::string::size_type)(end - value);
+                        term = std::string(value, len);
                     } else {
-                        term = a.second;
+                        term = value;
                     }
                     term += " county";
-                    buffer->add_hash_elem(a.first, term);
+                    buffer->add_hash_elem(key, term);
                 } else {
-                    buffer->add_hash_elem(a.first, a.second);
+                    buffer->add_hash_elem(key, value);
                 }
             }
             buffer->finish_hash();
@@ -538,8 +543,8 @@ void gazetteer_style_t::copy_out(osmium::OSMObject const &o,
             buffer->add_null_column();
         } else {
             buffer->new_hash();
-            for (auto const &entry : m_extra) {
-                buffer->add_hash_elem(entry.first, entry.second);
+            for (auto const &[key, value] : m_extra) {
+                buffer->add_hash_elem(key, value);
             }
             if (m_metadata_fields.version() && o.version()) {
                 buffer->add_hstore_num_noescape<osmium::object_version_type>(
