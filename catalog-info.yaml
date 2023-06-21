@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://json.schemastore.org/catalog-info.json
+
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: osm2pgsql
+  description: a tool for loading OpenStreetMap data into a PostgreSQL / PostGIS database.
+  tags:
+    - cpp
+spec:
+  type: service
+  lifecycle: production
+  owner: vector-team
+  system: vector-ingestion
+  dependsOn:
+    - resource:default/osm-changes
