@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -14,20 +14,48 @@
 #include "util.hpp"
 
 #include <cassert>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 
+std::size_t pg_result_t::affected_rows() const noexcept
+{
+    char const *const s = PQcmdTuples(m_result.get());
+    return std::strtoull(s, nullptr, 10);
+}
+
+std::atomic<std::uint32_t> pg_conn_t::connection_id{0};
+
 pg_conn_t::pg_conn_t(std::string const &conninfo)
-: m_conn(PQconnectdb(conninfo.c_str()))
+: m_conn(PQconnectdb(conninfo.c_str())),
+  m_connection_id(connection_id.fetch_add(1))
 {
     if (!m_conn) {
         throw std::runtime_error{"Connecting to database failed."};
     }
     if (PQstatus(m_conn.get()) != CONNECTION_OK) {
-        throw std::runtime_error{
-            "Connecting to database failed: {}."_format(error_msg())};
+        throw fmt_error("Connecting to database failed: {}.", error_msg());
     }
+
+    if (get_logger().log_sql()) {
+        auto const results = exec("SELECT pg_backend_pid()");
+        log_sql("(C{}) New database connection (backend_pid={})",
+                m_connection_id, results.get(0, 0));
+    }
+
+    // PostgreSQL sends notices in many different contexts which aren't that
+    // useful for the user. So we disable them for all connections.
+    if (!get_logger().debug_enabled()) {
+        exec("SET client_min_messages = WARNING");
+    }
+}
+
+void pg_conn_t::close()
+{
+    log_sql("(C{}) Closing database connection", m_connection_id);
+    m_conn.reset();
 }
 
 char const *pg_conn_t::error_msg() const noexcept
@@ -37,56 +65,51 @@ char const *pg_conn_t::error_msg() const noexcept
     return PQerrorMessage(m_conn.get());
 }
 
-pg_result_t pg_conn_t::query(ExecStatusType expect, char const *sql) const
-{
-    assert(m_conn);
-
-    log_sql("{}", sql);
-    pg_result_t res{PQexec(m_conn.get(), sql)};
-    if (PQresultStatus(res.get()) != expect) {
-        throw std::runtime_error{"Database error: {}"_format(error_msg())};
-    }
-    return res;
-}
-
-pg_result_t pg_conn_t::query(ExecStatusType expect,
-                             std::string const &sql) const
-{
-    return query(expect, sql.c_str());
-}
-
 void pg_conn_t::set_config(char const *setting, char const *value) const
 {
     // Update pg_settings instead of using SET because it does not yield
     // errors on older versions of PostgreSQL where the settings are not
     // implemented.
-    auto const sql =
-        "UPDATE pg_settings SET setting = '{}' WHERE name = '{}'"_format(
-            value, setting);
-    query(PGRES_TUPLES_OK, sql);
+    exec("UPDATE pg_catalog.pg_settings SET setting = '{}' WHERE name = '{}'",
+         value, setting);
 }
 
-void pg_conn_t::exec(char const *sql) const
+pg_result_t pg_conn_t::exec(char const *sql) const
 {
-    if (sql && sql[0] != '\0') {
-        query(PGRES_COMMAND_OK, sql);
+    assert(m_conn);
+
+    log_sql("(C{}) {}", m_connection_id, sql);
+    pg_result_t res{PQexec(m_conn.get(), sql)};
+    if (res.status() != PGRES_COMMAND_OK && res.status() != PGRES_TUPLES_OK) {
+        throw fmt_error("Database error: {}", error_msg());
+    }
+    return res;
+}
+
+pg_result_t pg_conn_t::exec(std::string const &sql) const
+{
+    return exec(sql.c_str());
+}
+
+void pg_conn_t::copy_start(char const *sql) const
+{
+    assert(m_conn);
+
+    log_sql("(C{}) {}", m_connection_id, sql);
+    pg_result_t const res{PQexec(m_conn.get(), sql)};
+    if (res.status() != PGRES_COPY_IN) {
+        throw fmt_error("Database error on COPY: {}", error_msg());
     }
 }
 
-void pg_conn_t::exec(std::string const &sql) const
-{
-    if (!sql.empty()) {
-        query(PGRES_COMMAND_OK, sql.c_str());
-    }
-}
-
-void pg_conn_t::copy_data(std::string const &sql,
+void pg_conn_t::copy_send(std::string const &data,
                           std::string const &context) const
 {
     assert(m_conn);
 
-    log_sql_data("Copy data to '{}':\n{}", context, sql);
-    int const r = PQputCopyData(m_conn.get(), sql.c_str(), (int)sql.size());
+    log_sql_data("(C{}) Copy data to '{}':\n{}", m_connection_id, context,
+                 data);
+    int const r = PQputCopyData(m_conn.get(), data.c_str(), (int)data.size());
 
     switch (r) {
     case 0: // need to wait for write ready
@@ -101,66 +124,67 @@ void pg_conn_t::copy_data(std::string const &sql,
         break;
     }
 
-    if (sql.size() < 1100) {
-        log_error("Data: {}", sql);
+    if (data.size() < 1100) {
+        log_error("Data: {}", data);
     } else {
-        log_error("Data: {}\n...\n{}", std::string(sql, 0, 500),
-                  std::string(sql, sql.size() - 500));
+        log_error("Data: {}\n...\n{}", std::string(data, 0, 500),
+                  std::string(data, data.size() - 500));
     }
 
     throw std::runtime_error{"COPYing data to Postgresql."};
 }
 
-void pg_conn_t::end_copy(std::string const &context) const
+void pg_conn_t::copy_end(std::string const &context) const
 {
     assert(m_conn);
 
     if (PQputCopyEnd(m_conn.get(), nullptr) != 1) {
-        throw std::runtime_error{"Ending COPY mode for '{}' failed: {}."_format(
-            context, error_msg())};
+        throw fmt_error("Ending COPY mode for '{}' failed: {}.", context,
+                        error_msg());
     }
 
     pg_result_t const res{PQgetResult(m_conn.get())};
-    if (PQresultStatus(res.get()) != PGRES_COMMAND_OK) {
-        throw std::runtime_error{fmt::format(
-            "Ending COPY mode for '{}' failed: {}.", context, error_msg())};
+    if (res.status() != PGRES_COMMAND_OK) {
+        throw fmt_error("Ending COPY mode for '{}' failed: {}.", context,
+                        error_msg());
     }
 }
 
 static std::string concat_params(int num_params,
                                  char const *const *param_values)
 {
-    std::string params;
+    util::string_joiner_t joiner{','};
 
     for (int i = 0; i < num_params; ++i) {
-        params += param_values[i] ? param_values[i] : "<NULL>";
-        params += ',';
+        joiner.add(param_values[i] ? param_values[i] : "<NULL>");
     }
 
-    if (!params.empty()) {
-        params.resize(params.size() - 1);
-    }
-
-    return params;
+    return joiner();
 }
 
-pg_result_t
-pg_conn_t::exec_prepared_internal(char const *stmt, int num_params,
-                                  char const *const *param_values) const
+pg_result_t pg_conn_t::exec_prepared_internal(char const *stmt, int num_params,
+                                              char const *const *param_values,
+                                              int *param_lengths,
+                                              int *param_formats,
+                                              int result_format) const
 {
     assert(m_conn);
 
     if (get_logger().log_sql()) {
-        log_sql("EXECUTE {}({})", stmt,
+        log_sql("(C{}) EXECUTE {}({})", m_connection_id, stmt,
                 concat_params(num_params, param_values));
     }
+
     pg_result_t res{PQexecPrepared(m_conn.get(), stmt, num_params, param_values,
-                                   nullptr, nullptr, 0)};
-    if (PQresultStatus(res.get()) != PGRES_TUPLES_OK) {
+                                   param_lengths, param_formats,
+                                   result_format)};
+
+    auto const status = res.status();
+    if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
         log_error("SQL command failed: EXECUTE {}({})", stmt,
                   concat_params(num_params, param_values));
-        throw std::runtime_error{"Database error: {} ({})"_format(
-            error_msg(), PQresultStatus(res.get()))};
+        throw fmt_error("Database error: {} ({})", error_msg(),
+                        std::underlying_type_t<ExecStatusType>(status));
     }
 
     return res;
@@ -181,63 +205,18 @@ std::string tablespace_clause(std::string const &name)
 
 std::string qualified_name(std::string const &schema, std::string const &name)
 {
-    std::string result{"\""};
-
-    if (!schema.empty()) {
-        result.reserve(schema.size() + name.size() + 5);
-        result += schema;
-        result += "\".\"";
-    } else {
-        result.reserve(name.size() + 2);
-    }
-
-    result += name;
-    result += '"';
-
-    return result;
+    assert(!schema.empty());
+    return fmt::format(R"("{}"."{}")", schema, name);
 }
 
-std::map<std::string, std::string>
-get_postgresql_settings(pg_conn_t const &db_connection)
+void check_identifier(std::string const &name, char const *in)
 {
-    auto const res = db_connection.query(
-        PGRES_TUPLES_OK, "SELECT name, setting FROM pg_settings");
+    auto const pos = name.find_first_of("\"',.;$%&/()<>{}=?^*#");
 
-    std::map<std::string, std::string> settings;
-    for (int i = 0; i < res.num_tuples(); ++i) {
-        settings[res.get_value_as_string(i, 0)] = res.get_value_as_string(i, 1);
+    if (pos == std::string::npos) {
+        return;
     }
 
-    return settings;
-}
-
-static std::string get_database_name(pg_conn_t const &db_connection)
-{
-    auto const res =
-        db_connection.query(PGRES_TUPLES_OK, "SELECT current_catalog");
-
-    if (res.num_tuples() != 1) {
-        throw std::runtime_error{
-            "Database error: Can not access database name."};
-    }
-
-    return res.get_value_as_string(0, 0);
-}
-
-postgis_version get_postgis_version(pg_conn_t const &db_connection)
-{
-    auto const res = db_connection.query(
-        PGRES_TUPLES_OK, "SELECT regexp_split_to_table(extversion, '\\.') FROM"
-                         " pg_extension WHERE extname='postgis'");
-
-    if (res.num_tuples() == 0) {
-        throw std::runtime_error{
-            "The postgis extension is not enabled on the database '{}'."
-            " Are you using the correct database?"
-            " Enable with 'CREATE EXTENSION postgis;'"_format(
-                get_database_name(db_connection))};
-    }
-
-    return {std::stoi(res.get_value_as_string(0, 0)),
-            std::stoi(res.get_value_as_string(1, 0))};
+    throw fmt_error("Special characters are not allowed in {}: '{}'.", in,
+                    name);
 }

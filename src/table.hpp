@@ -6,11 +6,12 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "db-copy-mgr.hpp"
+#include "options.hpp"
 #include "osmtypes.hpp"
 #include "pgsql.hpp"
 #include "taginfo.hpp"
@@ -42,7 +43,7 @@ public:
 
     void sync();
 
-    void task_set(std::future<std::chrono::milliseconds> &&future)
+    void task_set(std::future<std::chrono::microseconds> &&future)
     {
         m_task_result.set(std::move(future));
     }
@@ -56,7 +57,7 @@ public:
 
     task_result_t m_task_result;
 
-protected:
+private:
     void connect();
     void prepare();
     void teardown();

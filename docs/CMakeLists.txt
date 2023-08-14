@@ -25,6 +25,17 @@ if(PANDOC)
         VERBATIM)
 
     list(APPEND MANPAGE_TARGETS osm2pgsql.1)
+
+    if(BUILD_GEN)
+        add_custom_command(OUTPUT osm2pgsql-gen.1
+            COMMAND ${PANDOC} ${PANDOC_MAN_OPTIONS} -o osm2pgsql-gen.1
+                ${CMAKE_CURRENT_SOURCE_DIR}/osm2pgsql-gen.md
+            DEPENDS osm2pgsql-gen.md manpage.template
+            COMMENT "Building manpage osm2pgsql-gen.1"
+            VERBATIM)
+        list(APPEND MANPAGE_TARGETS osm2pgsql-gen.1)
+    endif()
+
 else()
     message(STATUS "Looking for pandoc - not found")
     message(STATUS "  osm2pgsql manual page can not be built")
@@ -53,4 +64,7 @@ endif()
 if(ENABLE_INSTALL)
     install(FILES osm2pgsql.1 DESTINATION share/man/man1)
     install(FILES osm2pgsql-replication.1 DESTINATION share/man/man1)
+    if (BUILD_GEN)
+        install(FILES osm2pgsql-gen.1 COMPONENT gen EXCLUDE_FROM_ALL DESTINATION share/man/man1)
+    endif()
 endif()

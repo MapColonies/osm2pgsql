@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -28,8 +28,8 @@
  */
 struct db_target_descr_t
 {
-    /// Schema of the target table (can be empty for default schema)
-    std::string schema;
+    /// Schema of the target table.
+    std::string schema{"public"};
     /// Name of the target table for the copy operation.
     std::string name;
     /// Name of id column used when deleting objects.

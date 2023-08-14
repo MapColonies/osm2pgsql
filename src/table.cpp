@@ -3,11 +3,12 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
@@ -18,6 +19,7 @@
 #include "format.hpp"
 #include "logging.hpp"
 #include "options.hpp"
+#include "pgsql-capabilities.hpp"
 #include "pgsql-helper.hpp"
 #include "table.hpp"
 #include "taginfo.hpp"
@@ -33,12 +35,12 @@ table_t::table_t(std::string const &name, std::string type, columns_t columns,
   m_hstore_mode(hstore_mode), m_columns(std::move(columns)),
   m_hstore_columns(std::move(hstore_columns)), m_copy(copy_thread)
 {
+    assert(!schema.empty());
     m_target->schema = schema;
 
     // if we dont have any columns
     if (m_columns.empty() && m_hstore_mode != hstore_column::all) {
-        throw std::runtime_error{
-            "No columns provided for table {}."_format(name)};
+        throw fmt_error("No columns provided for table {}.", name);
     }
 
     generate_copy_column_list();
@@ -75,8 +77,8 @@ void table_t::connect()
 void table_t::start(std::string const &conninfo, std::string const &table_space)
 {
     if (m_sql_conn) {
-        throw std::runtime_error{m_target->name +
-                                 " cannot start, its already started."};
+        throw fmt_error("{} cannot start, its already started.",
+                        m_target->name);
     }
 
     m_conninfo = conninfo;
@@ -84,35 +86,35 @@ void table_t::start(std::string const &conninfo, std::string const &table_space)
 
     connect();
     log_info("Setting up table '{}'", m_target->name);
-    m_sql_conn->exec("SET client_min_messages = WARNING");
     auto const qual_name = qualified_name(m_target->schema, m_target->name);
     auto const qual_tmp_name = qualified_name(
         m_target->schema, m_target->name + "_tmp");
 
     // we are making a new table
     if (!m_append) {
-        m_sql_conn->exec(
-            "DROP TABLE IF EXISTS {} CASCADE"_format(qual_name));
+        m_sql_conn->exec("DROP TABLE IF EXISTS {} CASCADE", qual_name);
     }
 
     // These _tmp tables can be left behind if we run out of disk space.
-    m_sql_conn->exec("DROP TABLE IF EXISTS {}"_format(qual_tmp_name));
-    m_sql_conn->exec("RESET client_min_messages");
+    m_sql_conn->exec("DROP TABLE IF EXISTS {}", qual_tmp_name);
 
     //making a new table
     if (!m_append) {
         //define the new table
         auto sql =
-            "CREATE UNLOGGED TABLE {} (osm_id int8,"_format(qual_name);
+            fmt::format("CREATE UNLOGGED TABLE {} (osm_id int8,", qual_name);
 
         //first with the regular columns
         for (auto const &column : m_columns) {
-            sql += R"("{}" {},)"_format(column.name, column.type_name);
+            check_identifier(column.name, "column names");
+            check_identifier(column.type_name, "column types");
+            sql += fmt::format(R"("{}" {},)", column.name, column.type_name);
         }
 
         //then with the hstore columns
         for (auto const &hcolumn : m_hstore_columns) {
-            sql += R"("{}" hstore,)"_format(hcolumn);
+            check_identifier(hcolumn, "column names");
+            sql += fmt::format(R"("{}" hstore,)", hcolumn);
         }
 
         //add tags column
@@ -120,7 +122,7 @@ void table_t::start(std::string const &conninfo, std::string const &table_space)
             sql += "\"tags\" hstore,";
         }
 
-        sql += "way geometry({},{}) )"_format(m_type, m_srid);
+        sql += fmt::format("way geometry({},{}) )", m_type, m_srid);
 
         // The final tables are created with CREATE TABLE AS ... SELECT * FROM ...
         // This means that they won't get this autovacuum setting, so it doesn't
@@ -145,35 +147,36 @@ void table_t::prepare()
 {
     //let postgres cache this query as it will presumably happen a lot
     auto const qual_name = qualified_name(m_target->schema, m_target->name);
-    m_sql_conn->exec(
-        "PREPARE get_wkb(int8) AS SELECT way FROM {} WHERE osm_id = $1"_format(
-            qual_name));
+    m_sql_conn->exec("PREPARE get_wkb(int8) AS"
+                     " SELECT way FROM {} WHERE osm_id = $1",
+                     qual_name);
 }
 
 void table_t::generate_copy_column_list()
 {
-    m_target->rows = "osm_id,";
-    //first with the regular columns
+    util::string_joiner_t joiner{',', '"'};
+
+    joiner.add("osm_id");
+
+    // first with the regular columns
     for (auto const &column : m_columns) {
-        m_target->rows += '"';
-        m_target->rows += column.name;
-        m_target->rows += "\",";
+        joiner.add(column.name);
     }
 
-    //then with the hstore columns
+    // then with the hstore columns
     for (auto const &hcolumn : m_hstore_columns) {
-        m_target->rows += '"';
-        m_target->rows += hcolumn;
-        m_target->rows += "\",";
+        joiner.add(hcolumn);
     }
 
-    //add tags column and geom column
+    // add tags column
     if (m_hstore_mode != hstore_column::none) {
-        m_target->rows += "tags,way";
-        //or just the geom column
-    } else {
-        m_target->rows += "way";
+        joiner.add("tags");
     }
+
+    // add geom column
+    joiner.add("way");
+
+    m_target->rows = joiner();
 }
 
 void table_t::stop(bool updateable, bool enable_hstore_index,
@@ -194,15 +197,10 @@ void table_t::stop(bool updateable, bool enable_hstore_index,
 
         log_info("Clustering table '{}' by geometry...", m_target->name);
 
-        // Notices about invalid geometries are expected and can be ignored
-        // because they say nothing about the validity of the geometry in OSM.
-        m_sql_conn->exec("SET client_min_messages = WARNING");
+        std::string sql = fmt::format("CREATE TABLE {} {} AS SELECT * FROM {}",
+                                      qual_tmp_name, m_table_space, qual_name);
 
-        std::string sql =
-            "CREATE TABLE {} {} AS SELECT * FROM {}"_format(
-                qual_tmp_name, m_table_space, qual_name);
-
-        auto const postgis_version = get_postgis_version(*m_sql_conn);
+        auto const postgis_version = get_postgis_version();
 
         sql += " ORDER BY ";
         if (postgis_version.major == 2 && postgis_version.minor < 4) {
@@ -224,23 +222,22 @@ void table_t::stop(bool updateable, bool enable_hstore_index,
 
         m_sql_conn->exec(sql);
 
-        m_sql_conn->exec("DROP TABLE {}"_format(qual_name));
-        m_sql_conn->exec(R"(ALTER TABLE {} RENAME TO "{}")"_format(
-            qual_tmp_name, m_target->name));
+        m_sql_conn->exec("DROP TABLE {}", qual_name);
+        m_sql_conn->exec(R"(ALTER TABLE {} RENAME TO "{}")", qual_tmp_name,
+                         m_target->name);
 
         log_info("Creating geometry index on table '{}'...", m_target->name);
 
         // Use fillfactor 100 for un-updatable imports
-        m_sql_conn->exec("CREATE INDEX ON {} USING GIST (way) {} {}"_format(
-            qual_name, (updateable ? "" : "WITH (fillfactor = 100)"),
-            tablespace_clause(table_space_index)));
+        m_sql_conn->exec("CREATE INDEX ON {} USING GIST (way) {} {}", qual_name,
+                         (updateable ? "" : "WITH (fillfactor = 100)"),
+                         tablespace_clause(table_space_index));
 
         /* slim mode needs this to be able to apply diffs */
         if (updateable) {
             log_info("Creating osm_id index on table '{}'...", m_target->name);
-            m_sql_conn->exec(
-                "CREATE INDEX ON {} USING BTREE (osm_id) {}"_format(
-                    qual_name, tablespace_clause(table_space_index)));
+            m_sql_conn->exec("CREATE INDEX ON {} USING BTREE (osm_id) {}",
+                             qual_name, tablespace_clause(table_space_index));
             if (m_srid != "4326") {
                 create_geom_check_trigger(m_sql_conn.get(), m_target->schema,
                                           m_target->name,
@@ -253,15 +250,14 @@ void table_t::stop(bool updateable, bool enable_hstore_index,
             log_info("Creating hstore indexes on table '{}'...",
                      m_target->name);
             if (m_hstore_mode != hstore_column::none) {
-                m_sql_conn->exec(
-                    "CREATE INDEX ON {} USING GIN (tags) {}"_format(
-                        qual_name, tablespace_clause(table_space_index)));
+                m_sql_conn->exec("CREATE INDEX ON {} USING GIN (tags) {}",
+                                 qual_name,
+                                 tablespace_clause(table_space_index));
             }
             for (auto const &hcolumn : m_hstore_columns) {
-                m_sql_conn->exec(
-                    R"(CREATE INDEX ON {} USING GIN ("{}") {})"_format(
-                        qual_name, hcolumn,
-                        tablespace_clause(table_space_index)));
+                m_sql_conn->exec(R"(CREATE INDEX ON {} USING GIN ("{}") {})",
+                                 qual_name, hcolumn,
+                                 tablespace_clause(table_space_index));
             }
         }
         log_info("Analyzing table '{}'...", m_target->name);
@@ -451,6 +447,6 @@ void table_t::escape_type(std::string const &value, ColumnType flags)
 
 pg_result_t table_t::get_wkb(osmid_t id)
 {
-    return m_sql_conn->exec_prepared("get_wkb", id);
+    return m_sql_conn->exec_prepared_as_binary("get_wkb", id);
 }
 

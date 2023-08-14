@@ -6,10 +6,12 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
+#include "expire-config.hpp"
+#include "expire-output.hpp"
 #include "expire-tiles.hpp"
 #include "flex-table-column.hpp"
 #include "flex-table.hpp"
@@ -19,10 +21,7 @@
 #include <osmium/index/id_set.hpp>
 #include <osmium/osm/item_type.hpp>
 
-extern "C"
-{
-#include <lua.h>
-}
+#include <lua.hpp>
 
 #include <cstdint>
 #include <memory>
@@ -33,8 +32,8 @@ extern "C"
 class db_copy_thread_t;
 class db_deleter_by_type_and_id_t;
 class geom_transform_t;
-class options_t;
 class thread_pool_t;
+struct options_t;
 
 using idset_t = osmium::index::IdSetSmall<osmid_t>;
 
@@ -72,7 +71,7 @@ public:
      * \param nresults The number of results this function is supposed to have.
      */
     prepared_lua_function_t(lua_State *lua_state, calling_context context,
-                            const char *name, int nresults = 0);
+                            char const *name, int nresults = 0);
 
     /// Return the index of the function on the Lua stack.
     int index() const noexcept { return m_index; }
@@ -97,20 +96,16 @@ private:
 
 class output_flex_t : public output_t
 {
-
 public:
-    output_flex_t(
-        std::shared_ptr<middle_query_t> const &mid,
-        std::shared_ptr<thread_pool_t> thread_pool, options_t const &options,
-        std::shared_ptr<db_copy_thread_t> const &copy_thread,
-        bool is_clone = false, std::shared_ptr<lua_State> lua_state = nullptr,
-        prepared_lua_function_t process_node = {},
-        prepared_lua_function_t process_way = {},
-        prepared_lua_function_t process_relation = {},
-        prepared_lua_function_t select_relation_members = {},
-        std::shared_ptr<std::vector<flex_table_t>> tables =
-            std::make_shared<std::vector<flex_table_t>>(),
-        std::shared_ptr<idset_t> stage2_way_ids = std::make_shared<idset_t>());
+    /// Constructor for new objects
+    output_flex_t(std::shared_ptr<middle_query_t> const &mid,
+                  std::shared_ptr<thread_pool_t> thread_pool,
+                  options_t const &options);
+
+    /// Constructor for cloned objects
+    output_flex_t(output_flex_t const *other,
+                  std::shared_ptr<middle_query_t> mid,
+                  std::shared_ptr<db_copy_thread_t> copy_thread);
 
     output_flex_t(output_flex_t const &) = delete;
     output_flex_t &operator=(output_flex_t const &) = delete;
@@ -127,6 +122,9 @@ public:
     void start() override;
     void stop() override;
     void sync() override;
+
+    void after_nodes() override;
+    void after_ways() override;
 
     void wait() override;
 
@@ -156,11 +154,13 @@ public:
     int app_as_point();
     int app_as_linestring();
     int app_as_polygon();
+    int app_as_multipoint();
     int app_as_multilinestring();
     int app_as_multipolygon();
     int app_as_geometrycollection();
 
     int app_define_table();
+    int app_define_expire_output();
     int app_get_bbox();
     int app_mark_way();
 
@@ -172,38 +172,35 @@ public:
     int table_cluster();
     int table_columns();
 
+    int expire_output_tostring();
+    int expire_output_name();
+    int expire_output_minzoom();
+    int expire_output_maxzoom();
+    int expire_output_filename();
+    int expire_output_schema();
+    int expire_output_table();
+
 private:
-    void init_clone();
     void select_relation_members();
 
     /**
      * Call a Lua function that was "prepared" earlier with the OSMObject
-     * as its only parameter.
+     * as its only parameter. Uses a mutex internally to make access to the
+     * Lua environment thread safe.
      */
     void call_lua_function(prepared_lua_function_t func,
                            osmium::OSMObject const &object);
 
-    /// Aquire the lua_mutex and the call `call_lua_function()`.
-    void get_mutex_and_call_lua_function(prepared_lua_function_t func,
-                                         osmium::OSMObject const &object);
-
     void init_lua(std::string const &filename);
 
-    flex_table_t &create_flex_table();
-    void setup_id_columns(flex_table_t *table);
-    void setup_flex_table_columns(flex_table_t *table);
-
+    // Get the flex table that is as first parameter on the Lua stack.
     flex_table_t const &get_table_from_param();
+
+    // Get the expire output that is as first parameter on the Lua stack.
+    expire_output_t const &get_expire_output_from_param();
 
     void check_context_and_state(char const *name, char const *context,
                                  bool condition);
-
-    void write_column(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
-                      flex_table_column_t const &column);
-
-    void write_row(table_connection_t *table_connection,
-                   osmium::item_type id_type, osmid_t id,
-                   geom::geometry_t const &geom, int srid);
 
     osmium::OSMObject const &
     check_and_get_context_object(flex_table_t const &table);
@@ -280,12 +277,17 @@ private:
 
     }; // relation_cache_t
 
-    std::shared_ptr<std::vector<flex_table_t>> m_tables;
+    std::shared_ptr<std::vector<flex_table_t>> m_tables =
+        std::make_shared<std::vector<flex_table_t>>();
+
+    std::shared_ptr<std::vector<expire_output_t>> m_expire_outputs =
+        std::make_shared<std::vector<expire_output_t>>();
+
     std::vector<table_connection_t> m_table_connections;
 
     // This is shared between all clones of the output and must only be
     // accessed while protected using the lua_mutex.
-    std::shared_ptr<idset_t> m_stage2_way_ids;
+    std::shared_ptr<idset_t> m_stage2_way_ids = std::make_shared<idset_t>();
 
     std::shared_ptr<db_copy_thread_t> m_copy_thread;
 
@@ -293,16 +295,16 @@ private:
     // accessed while protected using the lua_mutex.
     std::shared_ptr<lua_State> m_lua_state;
 
-    expire_tiles m_expire;
+    std::vector<expire_tiles> m_expire_tiles;
 
     way_cache_t m_way_cache;
     relation_cache_t m_relation_cache;
     osmium::Node const *m_context_node = nullptr;
 
-    prepared_lua_function_t m_process_node;
-    prepared_lua_function_t m_process_way;
-    prepared_lua_function_t m_process_relation;
-    prepared_lua_function_t m_select_relation_members;
+    prepared_lua_function_t m_process_node{};
+    prepared_lua_function_t m_process_way{};
+    prepared_lua_function_t m_process_relation{};
+    prepared_lua_function_t m_select_relation_members{};
 
     calling_context m_calling_context = calling_context::main;
 

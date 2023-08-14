@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -41,7 +41,7 @@ public:
     opt_t &slim(testing::pg::tempdb_t const &db)
     {
         m_opt.slim = true;
-        m_opt.database_options = db.db_options();
+        m_opt.conninfo = db.conninfo();
         return *this;
     }
 

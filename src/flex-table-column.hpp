@@ -6,13 +6,18 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
+
+#include "expire-config.hpp"
+#include "expire-tiles.hpp"
+#include "geom.hpp"
 
 #include <cassert>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 enum class table_column_type : uint8_t
 {
@@ -90,11 +95,14 @@ public:
      * column? If the SRID is 4326 the geometry validity is already assured
      * by libosmium, so we don't need it. And Point geometries are always
      * valid.
+     * No checks are needed for create_only columns, because they don't
+     * contain anything.
      */
     bool needs_isvalid() const noexcept
     {
         assert(is_geometry_column());
-        return m_srid != 4326 && m_type != table_column_type::point;
+        return !m_create_only && m_srid != 4326 &&
+               m_type != table_column_type::point;
     }
 
     std::string const &type_name() const noexcept { return m_type_name; }
@@ -115,7 +123,21 @@ public:
 
     int srid() const noexcept { return m_srid; }
 
+    void add_expire(expire_config_t const &config);
+
+    bool has_expire() const noexcept { return !m_expires.empty(); }
+
+    std::vector<expire_config_t> const &expire_configs() const noexcept
+    {
+        return m_expires;
+    }
+
+    void do_expire(geom::geometry_t const &geom,
+                   std::vector<expire_tiles> *expire) const;
+
 private:
+    std::vector<expire_config_t> m_expires;
+
     /// The name of the database table column.
     std::string m_name;
 

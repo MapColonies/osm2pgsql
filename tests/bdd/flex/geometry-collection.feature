@@ -20,7 +20,7 @@ Feature: Create geometry collections from relations
             end
             """
 
-    Scenario: Create geometry collection from different relations
+    Scenario Outline: Create geometry collection from different relations
         Given the 1.0 grid
             | 13 | 12 | 17 |    | 16 |
             | 10 | 11 |    | 14 | 15 |
@@ -33,7 +33,9 @@ Feature: Create geometry collections from relations
             r32 Tname=mixed Mn17@,w21@
             r33 Tname=node Mn17@
             """
-        When running osm2pgsql flex
+        When running osm2pgsql flex with parameters
+            | -c      |
+            | <param> |
 
         Then table osm2pgsql_test_collection contains exactly
             | osm_id | name   | ST_GeometryType(geom) | ST_NumGeometries(geom) | ST_GeometryType(ST_GeometryN(geom, 1)) |
@@ -49,6 +51,11 @@ Feature: Create geometry collections from relations
             | 32     | 17                               | 14, 15, 16                       |
             | 33     | 17                               | NULL                             |
 
+        Examples:
+            | param  |
+            |        |
+            | --slim |
+
     Scenario: NULL entry generated for broken geometries
         Given the grid
             | 10 |
@@ -62,8 +69,42 @@ Feature: Create geometry collections from relations
         When running osm2pgsql flex
 
         Then table osm2pgsql_test_collection contains exactly
-            | osm_id | name   | ST_GeometryType(geom) |
-            | 30     | foo    | NULL                  |
-            | 31     | bar    | NULL                  |
-            | 32     | baz    | NULL                  |
+            | osm_id | name   | geom |
+            | 30     | foo    | NULL |
+            | 31     | bar    | NULL |
+            | 32     | baz    | NULL |
+
+    Scenario: Null geometry generated for broken way lines
+        Given the grid
+            | 10 |
+        And the OSM data
+            """
+            w20 Nn10
+            w21 Nn10,n10
+            r30 Tname=w20 Mw20@
+            r31 Tname=w21 Mw21@
+            """
+        When running osm2pgsql flex
+
+        Then table osm2pgsql_test_collection contains exactly
+            | osm_id | name  | geom |
+            | 30     | w20   | NULL |
+            | 31     | w21   | NULL |
+
+    Scenario: No geometry generated for broken way lines, others are there
+        Given the grid
+            | 10 | 11 |
+            | 13 | 12 |
+        And the OSM data
+            """
+            w20 Nn10,n11,n12,n13,n10
+            w21 Nn10
+            w22 Nn10,n11,n13
+            r30 Tname=three Mw20@,w21@,w22@
+            """
+        When running osm2pgsql flex
+
+        Then table osm2pgsql_test_collection contains exactly
+            | osm_id | name  | ST_NumGeometries(geom) | ST_AsText(ST_GeometryN(geom, 1)) | ST_AsText(ST_GeometryN(geom, 2)) |
+            | 30     | three | 2                      | 10, 11, 12, 13, 10               | 10, 11, 13                       |
 

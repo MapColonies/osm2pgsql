@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -82,6 +82,26 @@ struct options_flat_node_cache
     }
 };
 
+struct options_slim_new_format
+{
+    static options_t options(testing::pg::tempdb_t const &tmpdb)
+    {
+        options_t o = testing::opt_t().slim(tmpdb);
+        o.middle_database_format = 2;
+        return o;
+    }
+};
+
+struct options_slim_new_format_with_flatnodes
+{
+    static options_t options(testing::pg::tempdb_t const &tmpdb)
+    {
+        options_t o = testing::opt_t().slim(tmpdb).flatnodes();
+        o.middle_database_format = 2;
+        return o;
+    }
+};
+
 struct options_ram_optimized
 {
     static options_t options(testing::pg::tempdb_t const &)
@@ -91,22 +111,24 @@ struct options_ram_optimized
 };
 
 TEMPLATE_TEST_CASE("middle import", "", options_slim_default,
-                   options_slim_with_lc_prefix, options_slim_with_uc_prefix,
-                   options_slim_with_schema, options_ram_optimized)
+                   options_slim_new_format, options_slim_with_lc_prefix,
+                   options_slim_with_uc_prefix, options_slim_with_schema,
+                   options_ram_optimized)
 {
     options_t const options = TestType::options(db);
-    testing::cleanup::file_t flatnode_cleaner{options.flat_node_file};
+    testing::cleanup::file_t const flatnode_cleaner{options.flat_node_file};
 
     auto conn = db.connect();
     auto const num_tables =
-        conn.get_count("pg_tables", "schemaname = 'public'");
+        conn.get_count("pg_catalog.pg_tables", "schemaname = 'public'");
     auto const num_indexes =
-        conn.get_count("pg_indexes", "schemaname = 'public'");
+        conn.get_count("pg_catalog.pg_indexes", "schemaname = 'public'");
     auto const num_procs =
-        conn.get_count("pg_proc", "pronamespace = (SELECT oid FROM "
-                                  "pg_namespace WHERE nspname = 'public')");
+        conn.get_count("pg_catalog.pg_proc",
+                       "pronamespace = (SELECT oid FROM "
+                       "pg_catalog.pg_namespace WHERE nspname = 'public')");
 
-    if (!options.middle_dbschema.empty()) {
+    if (options.middle_dbschema == "osm") {
         conn.exec("CREATE SCHEMA IF NOT EXISTS osm;");
     }
 
@@ -130,6 +152,8 @@ TEMPLATE_TEST_CASE("middle import", "", options_slim_default,
         // set the node
         mid->node(node);
         mid->after_nodes();
+        mid->after_ways();
+        mid->after_relations();
 
         // getting it back works only via a waylist
         auto &nodes = buffer.add_way("w3 Nn1234").nodes();
@@ -160,8 +184,9 @@ TEMPLATE_TEST_CASE("middle import", "", options_slim_default,
         // set nodes
         for (osmid_t i = 1; i <= 10; ++i) {
             nds.push_back(i);
-            auto const &node = buffer.add_node("n{} x{:.7f} y{:.7f}"_format(
-                i, lon - i * 0.003, lat + i * 0.001));
+            auto const &node = buffer.add_node(fmt::format(
+                "n{} x{:.7f} y{:.7f}", i, lon - static_cast<double>(i) * 0.003,
+                lat + static_cast<double>(i) * 0.001));
             mid->node(node);
         }
         mid->after_nodes();
@@ -169,6 +194,7 @@ TEMPLATE_TEST_CASE("middle import", "", options_slim_default,
         // set the way
         mid->way(buffer.add_way(way_id, nds));
         mid->after_ways();
+        mid->after_relations();
 
         // get it back
         osmium::memory::Buffer outbuf{4096,
@@ -213,6 +239,14 @@ TEMPLATE_TEST_CASE("middle import", "", options_slim_default,
         // set the relation
         auto const &relation =
             buffer.add_relation("r123 Mw11@,w10@outer,n1@,w12@inner");
+
+        std::vector<std::pair<osmium::item_type, osmid_t>> const expected = {
+            {osmium::item_type::way, 11},
+            {osmium::item_type::way, 10},
+            {osmium::item_type::node, 1},
+            {osmium::item_type::way, 12},
+        };
+
         osmium::CRC<osmium::CRC_zlib> orig_crc;
         orig_crc.update(relation);
 
@@ -232,17 +266,62 @@ TEMPLATE_TEST_CASE("middle import", "", options_slim_default,
         crc.update(rel);
         CHECK(orig_crc().checksum() == crc().checksum());
 
-        // retrieve the supporting ways
-        REQUIRE(mid_q->rel_members_get(rel, &outbuf,
+        // retrieve node members only
+        osmium::memory::Buffer memberbuf{
+            4096, osmium::memory::Buffer::auto_grow::yes};
+        REQUIRE(mid_q->rel_members_get(rel, &memberbuf,
+                                       osmium::osm_entity_bits::node) == 1);
+
+        {
+            auto const objects = memberbuf.select<osmium::OSMObject>();
+            auto it = objects.cbegin();
+            auto const end = objects.cend();
+            for (auto const &p : expected) {
+                if (p.first == osmium::item_type::node) {
+                    REQUIRE(it != end);
+                    REQUIRE(it->type() == p.first);
+                    REQUIRE(it->id() == p.second);
+                    ++it;
+                }
+            }
+        }
+
+        memberbuf.clear();
+
+        // retrieve way members only
+        REQUIRE(mid_q->rel_members_get(rel, &memberbuf,
                                        osmium::osm_entity_bits::way) == 3);
 
-        for (auto &w : outbuf.select<osmium::Way>()) {
-            REQUIRE(w.id() >= 10);
-            REQUIRE(w.id() <= 12);
-            auto const &expected = nds[w.id() - 10];
-            REQUIRE(w.nodes().size() == expected.size());
-            for (size_t i = 0; i < expected.size(); ++i) {
-                REQUIRE(w.nodes()[i].ref() == expected[i]);
+        {
+            auto const objects = memberbuf.select<osmium::OSMObject>();
+            auto it = objects.cbegin();
+            auto const end = objects.cend();
+            for (auto const &p : expected) {
+                if (p.first == osmium::item_type::way) {
+                    REQUIRE(it != end);
+                    REQUIRE(it->type() == p.first);
+                    REQUIRE(it->id() == p.second);
+                    ++it;
+                }
+            }
+        }
+
+        memberbuf.clear();
+
+        // retrieve all members
+        REQUIRE(mid_q->rel_members_get(rel, &memberbuf,
+                                       osmium::osm_entity_bits::node |
+                                           osmium::osm_entity_bits::way) == 4);
+
+        {
+            auto const objects = memberbuf.select<osmium::OSMObject>();
+            auto it = objects.cbegin();
+            auto const end = objects.cend();
+            for (auto const &p : expected) {
+                REQUIRE(it != end);
+                REQUIRE(it->type() == p.first);
+                REQUIRE(it->id() == p.second);
+                ++it;
             }
         }
 
@@ -250,15 +329,16 @@ TEMPLATE_TEST_CASE("middle import", "", options_slim_default,
         REQUIRE_FALSE(mid_q->relation_get(999, &outbuf));
     }
 
-    if (!options.middle_dbschema.empty()) {
-        REQUIRE(num_tables ==
-                conn.get_count("pg_tables", "schemaname = 'public'"));
-        REQUIRE(num_indexes ==
-                conn.get_count("pg_indexes", "schemaname = 'public'"));
+    if (options.middle_dbschema != "public") {
+        REQUIRE(num_tables == conn.get_count("pg_catalog.pg_tables",
+                                             "schemaname = 'public'"));
+        REQUIRE(num_indexes == conn.get_count("pg_catalog.pg_indexes",
+                                              "schemaname = 'public'"));
         REQUIRE(num_procs ==
-                conn.get_count("pg_proc",
-                               "pronamespace = (SELECT oid FROM "
-                               "pg_namespace WHERE nspname = 'public')"));
+                conn.get_count(
+                    "pg_catalog.pg_proc",
+                    "pronamespace = (SELECT oid FROM "
+                    "pg_catalog.pg_namespace WHERE nspname = 'public')"));
     }
 }
 
@@ -286,13 +366,15 @@ static bool no_node(std::shared_ptr<middle_pgsql_t> const &mid, osmid_t id)
 }
 
 TEMPLATE_TEST_CASE("middle: add, delete and update node", "",
-                   options_slim_default, options_flat_node_cache)
+                   options_slim_default, options_slim_new_format,
+                   options_flat_node_cache,
+                   options_slim_new_format_with_flatnodes)
 {
     auto thread_pool = std::make_shared<thread_pool_t>(1U);
 
     options_t options = TestType::options(db);
 
-    testing::cleanup::file_t flatnode_cleaner{options.flat_node_file};
+    testing::cleanup::file_t const flatnode_cleaner{options.flat_node_file};
 
     // Prepare a buffer with some nodes which we will add and change.
     test_buffer_t buffer;
@@ -318,6 +400,7 @@ TEMPLATE_TEST_CASE("middle: add, delete and update node", "",
         mid->node(node10);
         mid->node(node11);
         mid->after_nodes();
+        mid->after_ways();
         mid->after_relations();
 
         check_node(mid, node10);
@@ -348,6 +431,7 @@ TEMPLATE_TEST_CASE("middle: add, delete and update node", "",
             mid->node(node10d);
             mid->node(node42d);
             mid->after_nodes();
+            mid->after_ways();
             mid->after_relations();
 
             REQUIRE(no_node(mid, 5));
@@ -378,6 +462,7 @@ TEMPLATE_TEST_CASE("middle: add, delete and update node", "",
             mid->node(node12d);
             mid->node(node12);
             mid->after_nodes();
+            mid->after_ways();
             mid->after_relations();
 
             check_node(mid, node10a);
@@ -403,6 +488,7 @@ TEMPLATE_TEST_CASE("middle: add, delete and update node", "",
 
             mid->node(node12);
             mid->after_nodes();
+            mid->after_ways();
             mid->after_relations();
 
             REQUIRE(no_node(mid, 5));
@@ -437,6 +523,25 @@ static void check_way(std::shared_ptr<middle_pgsql_t> const &mid,
     osmium::memory::Buffer outbuf{4096, osmium::memory::Buffer::auto_grow::yes};
     REQUIRE(mid_q->way_get(orig_way.id(), &outbuf));
     auto const &way = outbuf.get<osmium::Way>(0);
+
+    CHECK(orig_way.id() == way.id());
+    CHECK(orig_way.timestamp() == way.timestamp());
+    CHECK(orig_way.version() == way.version());
+    CHECK(orig_way.changeset() == way.changeset());
+    CHECK(orig_way.uid() == way.uid());
+    CHECK(std::strcmp(orig_way.user(), way.user()) == 0);
+
+    REQUIRE(orig_way.tags().size() == way.tags().size());
+    for (auto it1 = orig_way.tags().begin(), it2 = way.tags().begin();
+         it1 != orig_way.tags().end(); ++it1, ++it2) {
+        CHECK(*it1 == *it2);
+    }
+
+    REQUIRE(orig_way.nodes().size() == way.nodes().size());
+    for (auto it1 = orig_way.nodes().begin(), it2 = way.nodes().begin();
+         it1 != orig_way.nodes().end(); ++it1, ++it2) {
+        CHECK(*it1 == *it2);
+    }
 
     osmium::CRC<osmium::CRC_zlib> orig_crc;
     orig_crc.update(orig_way);
@@ -480,13 +585,15 @@ static bool no_way(std::shared_ptr<middle_pgsql_t> const &mid, osmid_t id)
 }
 
 TEMPLATE_TEST_CASE("middle: add, delete and update way", "",
-                   options_slim_default, options_flat_node_cache)
+                   options_slim_default, options_slim_new_format,
+                   options_flat_node_cache,
+                   options_slim_new_format_with_flatnodes)
 {
     auto thread_pool = std::make_shared<thread_pool_t>(1U);
 
     options_t options = TestType::options(db);
 
-    testing::cleanup::file_t flatnode_cleaner{options.flat_node_file};
+    testing::cleanup::file_t const flatnode_cleaner{options.flat_node_file};
 
     // Create some ways we'll use for the tests.
     test_buffer_t buffer;
@@ -512,6 +619,7 @@ TEMPLATE_TEST_CASE("middle: add, delete and update way", "",
         auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
         mid->start();
 
+        mid->after_nodes();
         mid->way(way20);
         mid->way(way21);
         mid->after_ways();
@@ -541,6 +649,7 @@ TEMPLATE_TEST_CASE("middle: add, delete and update way", "",
             auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
             mid->start();
 
+            mid->after_nodes();
             mid->way(way5d);
             mid->way(way20d);
             mid->way(way42d);
@@ -570,6 +679,7 @@ TEMPLATE_TEST_CASE("middle: add, delete and update way", "",
             auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
             mid->start();
 
+            mid->after_nodes();
             mid->way(way20d);
             mid->way(way20a);
             mid->way(way22d);
@@ -602,6 +712,7 @@ TEMPLATE_TEST_CASE("middle: add, delete and update way", "",
             auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
             mid->start();
 
+            mid->after_nodes();
             mid->way(way22);
             mid->after_ways();
             mid->after_relations();
@@ -627,7 +738,8 @@ TEMPLATE_TEST_CASE("middle: add, delete and update way", "",
 }
 
 TEMPLATE_TEST_CASE("middle: add way with attributes", "", options_slim_default,
-                   options_flat_node_cache)
+                   options_slim_new_format, options_flat_node_cache,
+                   options_slim_new_format_with_flatnodes)
 {
     auto thread_pool = std::make_shared<thread_pool_t>(1U);
 
@@ -636,7 +748,7 @@ TEMPLATE_TEST_CASE("middle: add way with attributes", "", options_slim_default,
     SECTION("With attributes") { options.extra_attributes = true; }
     SECTION("No attributes") { options.extra_attributes = false; }
 
-    testing::cleanup::file_t flatnode_cleaner{options.flat_node_file};
+    testing::cleanup::file_t const flatnode_cleaner{options.flat_node_file};
 
     // Create some ways we'll use for the tests.
     test_buffer_t buffer;
@@ -651,23 +763,16 @@ TEMPLATE_TEST_CASE("middle: add way with attributes", "", options_slim_default,
     auto &way20_no_attr =
         buffer.add_way("w20 Nn10,n11 Thighway=residential,name=High_Street");
 
-    // The same way but with attributes in tags.
-    // The order of the tags is important here!
-    auto &way20_attr_tags = buffer.add_way(
-        "w20 Nn10,n11 "
-        "Thighway=residential,name=High_Street,osm_user=,osm_uid=789,"
-        "osm_version=123,osm_timestamp=2009-02-13T23:31:30Z,osm_changeset=456");
-
     {
         auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
         mid->start();
 
+        mid->after_nodes();
         mid->way(way20);
         mid->after_ways();
         mid->after_relations();
 
-        check_way(mid,
-                  options.extra_attributes ? way20_attr_tags : way20_no_attr);
+        check_way(mid, options.extra_attributes ? way20 : way20_no_attr);
     }
 
     // From now on use append mode to not destroy the data we just added.
@@ -677,8 +782,7 @@ TEMPLATE_TEST_CASE("middle: add way with attributes", "", options_slim_default,
         auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
         mid->start();
 
-        check_way(mid,
-                  options.extra_attributes ? way20_attr_tags : way20_no_attr);
+        check_way(mid, options.extra_attributes ? way20 : way20_no_attr);
     }
 }
 
@@ -694,6 +798,28 @@ static void check_relation(std::shared_ptr<middle_pgsql_t> const &mid,
     osmium::memory::Buffer outbuf{4096, osmium::memory::Buffer::auto_grow::yes};
     REQUIRE(mid_q->relation_get(orig_relation.id(), &outbuf));
     auto const &relation = outbuf.get<osmium::Relation>(0);
+
+    CHECK(orig_relation.id() == relation.id());
+    CHECK(orig_relation.timestamp() == relation.timestamp());
+    CHECK(orig_relation.version() == relation.version());
+    CHECK(orig_relation.changeset() == relation.changeset());
+    CHECK(orig_relation.uid() == relation.uid());
+    CHECK(std::strcmp(orig_relation.user(), relation.user()) == 0);
+
+    REQUIRE(orig_relation.tags().size() == relation.tags().size());
+    for (auto it1 = orig_relation.tags().begin(), it2 = relation.tags().begin();
+         it1 != orig_relation.tags().end(); ++it1, ++it2) {
+        CHECK(*it1 == *it2);
+    }
+
+    REQUIRE(orig_relation.members().size() == relation.members().size());
+    for (auto it1 = orig_relation.members().begin(),
+              it2 = relation.members().begin();
+         it1 != orig_relation.members().end(); ++it1, ++it2) {
+        CHECK(it1->type() == it2->type());
+        CHECK(it1->ref() == it2->ref());
+        CHECK(std::strcmp(it1->role(), it2->role()) == 0);
+    }
 
     osmium::CRC<osmium::CRC_zlib> orig_crc;
     orig_crc.update(orig_relation);
@@ -713,25 +839,27 @@ static bool no_relation(std::shared_ptr<middle_pgsql_t> const &mid, osmid_t id)
 }
 
 TEMPLATE_TEST_CASE("middle: add, delete and update relation", "",
-                   options_slim_default, options_flat_node_cache)
+                   options_slim_default, options_slim_new_format,
+                   options_flat_node_cache,
+                   options_slim_new_format_with_flatnodes)
 {
     auto thread_pool = std::make_shared<thread_pool_t>(1U);
 
     options_t options = TestType::options(db);
 
-    testing::cleanup::file_t flatnode_cleaner{options.flat_node_file};
+    testing::cleanup::file_t const flatnode_cleaner{options.flat_node_file};
 
     // Create some relations we'll use for the tests.
     test_buffer_t buffer;
     auto const &relation30 = buffer.add_relation(
-        "r30 Mw10@outer,w11@innder Ttype=multipolygon,name=Penguin_Park");
+        "r30 Mw10@outer,w11@innder Tname=Penguin_Park,type=multipolygon");
 
     auto const &relation31 = buffer.add_relation("r31 Mn10@");
 
     auto const &relation32 = buffer.add_relation("r32 Mr39@ Ttype=site");
 
     auto const &relation30a = buffer.add_relation(
-        "r30 Mw10@outer,w11@outer Ttype=multipolygon,name=Pigeon_Park");
+        "r30 Mw10@outer,w11@outer Tname=Pigeon_Park,type=multipolygon");
 
     auto const &relation5d = buffer.add_relation("r5 dD");
     auto const &relation30d = buffer.add_relation("r30 dD");
@@ -745,6 +873,8 @@ TEMPLATE_TEST_CASE("middle: add, delete and update relation", "",
         auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
         mid->start();
 
+        mid->after_nodes();
+        mid->after_ways();
         mid->relation(relation30);
         mid->relation(relation31);
         mid->after_relations();
@@ -773,6 +903,8 @@ TEMPLATE_TEST_CASE("middle: add, delete and update relation", "",
             auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
             mid->start();
 
+            mid->after_nodes();
+            mid->after_ways();
             mid->relation(relation5d);
             mid->relation(relation30d);
             mid->relation(relation42d);
@@ -801,6 +933,8 @@ TEMPLATE_TEST_CASE("middle: add, delete and update relation", "",
             auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
             mid->start();
 
+            mid->after_nodes();
+            mid->after_ways();
             mid->relation(relation30d);
             mid->relation(relation30a);
             mid->relation(relation32d);
@@ -832,6 +966,8 @@ TEMPLATE_TEST_CASE("middle: add, delete and update relation", "",
             auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
             mid->start();
 
+            mid->after_nodes();
+            mid->after_ways();
             mid->relation(relation32);
             mid->after_relations();
 
@@ -856,7 +992,9 @@ TEMPLATE_TEST_CASE("middle: add, delete and update relation", "",
 }
 
 TEMPLATE_TEST_CASE("middle: add relation with attributes", "",
-                   options_slim_default, options_flat_node_cache)
+                   options_slim_default, options_slim_new_format,
+                   options_flat_node_cache,
+                   options_slim_new_format_with_flatnodes)
 {
     auto thread_pool = std::make_shared<thread_pool_t>(1U);
 
@@ -865,33 +1003,28 @@ TEMPLATE_TEST_CASE("middle: add relation with attributes", "",
     SECTION("With attributes") { options.extra_attributes = true; }
     SECTION("No attributes") { options.extra_attributes = false; }
 
-    testing::cleanup::file_t flatnode_cleaner{options.flat_node_file};
+    testing::cleanup::file_t const flatnode_cleaner{options.flat_node_file};
 
     // Create some relations we'll use for the tests.
     test_buffer_t buffer;
     auto const &relation30 = buffer.add_relation(
         "r30 v123 c456 i789 t2009-02-13T23:31:30Z Mw10@outer,w11@inner "
-        "Ttype=multipolygon,name=Penguin_Park");
+        "Tname=Penguin_Park,type=multipolygon");
 
     // The same relation but with default attributes.
     auto const &relation30_no_attr = buffer.add_relation(
-        "r30 Mw10@outer,w11@inner Ttype=multipolygon,name=Penguin_Park");
-
-    // The same relation but with attributes in tags.
-    // The order of the tags is important here!
-    auto const &relation30_attr_tags = buffer.add_relation(
-        "r30 Mw10@outer,w11@inner "
-        "Ttype=multipolygon,name=Penguin_Park,osm_user=,osm_uid=789,"
-        "osm_version=123,osm_timestamp=2009-02-13T23:31:30Z,osm_changeset=456");
+        "r30 Mw10@outer,w11@inner Tname=Penguin_Park,type=multipolygon");
 
     {
         auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
         mid->start();
 
+        mid->after_nodes();
+        mid->after_ways();
         mid->relation(relation30);
         mid->after_relations();
 
-        check_relation(mid, options.extra_attributes ? relation30_attr_tags
+        check_relation(mid, options.extra_attributes ? relation30
                                                      : relation30_no_attr);
     }
 
@@ -902,19 +1035,20 @@ TEMPLATE_TEST_CASE("middle: add relation with attributes", "",
         auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
         mid->start();
 
-        check_relation(mid, options.extra_attributes ? relation30_attr_tags
+        check_relation(mid, options.extra_attributes ? relation30
                                                      : relation30_no_attr);
     }
 }
 
 TEMPLATE_TEST_CASE("middle: change nodes in way", "", options_slim_default,
-                   options_flat_node_cache)
+                   options_slim_new_format, options_flat_node_cache,
+                   options_slim_new_format_with_flatnodes)
 {
     auto thread_pool = std::make_shared<thread_pool_t>(1U);
 
     options_t options = TestType::options(db);
 
-    testing::cleanup::file_t flatnode_cleaner{options.flat_node_file};
+    testing::cleanup::file_t const flatnode_cleaner{options.flat_node_file};
 
     // create some nodes and ways we'll use for the tests
     test_buffer_t buffer;
@@ -937,7 +1071,7 @@ TEMPLATE_TEST_CASE("middle: change nodes in way", "", options_slim_default,
     // closed properly.
     {
         auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
-        full_dependency_manager_t dependency_manager{mid};
+        full_dependency_manager_t const dependency_manager{mid};
         mid->start();
 
         mid->node(node10);
@@ -958,6 +1092,9 @@ TEMPLATE_TEST_CASE("middle: change nodes in way", "", options_slim_default,
         check_way_nodes(mid, way21.id(), {&node11, &node12});
 
         REQUIRE_FALSE(dependency_manager.has_pending());
+
+        mid->stop();
+        mid->wait();
     }
 
     // From now on use append mode to not destroy the data we just added.
@@ -973,6 +1110,10 @@ TEMPLATE_TEST_CASE("middle: change nodes in way", "", options_slim_default,
         mid->node(node10a);
         dependency_manager.node_changed(10);
         mid->after_nodes();
+        dependency_manager.after_nodes();
+        mid->after_ways();
+        dependency_manager.after_ways();
+        mid->after_relations();
 
         REQUIRE(dependency_manager.has_pending());
         idlist_t const way_ids = dependency_manager.get_pending_way_ids();
@@ -988,9 +1129,11 @@ TEMPLATE_TEST_CASE("middle: change nodes in way", "", options_slim_default,
             auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
             mid->start();
 
+            mid->after_nodes();
             mid->way(way22);
             mid->after_ways();
             mid->after_relations();
+
             check_way(mid, way22);
         }
         {
@@ -1002,6 +1145,10 @@ TEMPLATE_TEST_CASE("middle: change nodes in way", "", options_slim_default,
             mid->node(node10a);
             dependency_manager.node_changed(10);
             mid->after_nodes();
+            dependency_manager.after_nodes();
+            mid->after_ways();
+            dependency_manager.after_ways();
+            mid->after_relations();
 
             REQUIRE(dependency_manager.has_pending());
             idlist_t const way_ids = dependency_manager.get_pending_way_ids();
@@ -1020,6 +1167,7 @@ TEMPLATE_TEST_CASE("middle: change nodes in way", "", options_slim_default,
             auto mid = std::make_shared<middle_pgsql_t>(thread_pool, &options);
             mid->start();
 
+            mid->after_nodes();
             mid->way(way20d);
             mid->way(way20a);
             mid->after_ways();
@@ -1038,6 +1186,10 @@ TEMPLATE_TEST_CASE("middle: change nodes in way", "", options_slim_default,
             mid->node(node10a);
             dependency_manager.node_changed(10);
             mid->after_nodes();
+            dependency_manager.after_nodes();
+            mid->after_ways();
+            dependency_manager.after_ways();
+            mid->after_relations();
 
             REQUIRE_FALSE(dependency_manager.has_pending());
         }
@@ -1045,13 +1197,14 @@ TEMPLATE_TEST_CASE("middle: change nodes in way", "", options_slim_default,
 }
 
 TEMPLATE_TEST_CASE("middle: change nodes in relation", "", options_slim_default,
-                   options_flat_node_cache)
+                   options_slim_new_format, options_flat_node_cache,
+                   options_slim_new_format_with_flatnodes)
 {
     auto thread_pool = std::make_shared<thread_pool_t>(1U);
 
     options_t options = TestType::options(db);
 
-    testing::cleanup::file_t flatnode_cleaner{options.flat_node_file};
+    testing::cleanup::file_t const flatnode_cleaner{options.flat_node_file};
 
     // create some nodes, ways, and relations we'll use for the tests
     test_buffer_t buffer;
@@ -1085,6 +1238,9 @@ TEMPLATE_TEST_CASE("middle: change nodes in relation", "", options_slim_default,
         mid->relation(rel30);
         mid->relation(rel31);
         mid->after_relations();
+
+        mid->stop();
+        mid->wait();
     }
 
     // From now on use append mode to not destroy the data we just added.
@@ -1100,6 +1256,9 @@ TEMPLATE_TEST_CASE("middle: change nodes in relation", "", options_slim_default,
         mid->node(node10a);
         dependency_manager.node_changed(10);
         mid->after_nodes();
+        dependency_manager.after_nodes();
+        mid->after_ways();
+        dependency_manager.after_ways();
         mid->after_relations();
 
         REQUIRE(dependency_manager.has_pending());
@@ -1119,6 +1278,9 @@ TEMPLATE_TEST_CASE("middle: change nodes in relation", "", options_slim_default,
         mid->node(node11a);
         dependency_manager.node_changed(11);
         mid->after_nodes();
+        dependency_manager.after_nodes();
+        mid->after_ways();
+        dependency_manager.after_ways();
         mid->after_relations();
 
         REQUIRE(dependency_manager.has_pending());

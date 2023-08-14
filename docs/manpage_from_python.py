@@ -2,7 +2,7 @@
 #
 # This file is part of osm2pgsql (https://osm2pgsql.org/).
 #
-# Copyright (C) 2022 by the osm2pgsql developer community.
+# Copyright (C) 2023 by the osm2pgsql developer community.
 # For a full list of authors see the git log.
 """ Create a man page for osm2pgsql helper scripts in python.
 """
@@ -31,6 +31,7 @@ def create_manpage_for(args):
     manpage = re.sub(r'.TH.*',
                      f'.TH "{parser.prog.upper()}" "1" "{args.version}" "" ""',
                      manpage)
+    manpage = manpage.replace('%(prog)s', parser.prog)
     # Correct quoting for single quotes. See groff manpage.
     manpage = manpage.replace('`', '\\(cq')
 

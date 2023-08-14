@@ -1,6 +1,6 @@
 # NAME
 
-osm2pgsql - Openstreetmap data to PostgreSQL converter
+osm2pgsql - OpenStreetMap data to PostgreSQL converter
 
 # SYNOPSIS
 
@@ -18,7 +18,7 @@ other applications processing OSM data.
 In "create" mode osm2pgsql will create the database tables required by the
 configuration and import the OSM file(s) specified on the command line into
 those tables. Note that you also have to use the **-s, \--slim** option if you
-want your database to be updateable.
+want your database to be updatable.
 
 In "append" mode osm2pgsql will update the database tables with the data from
 OSM change files specified on the command line.
@@ -165,11 +165,24 @@ mandatory for short options too.
 
 \--middle-schema=SCHEMA
 :   Use PostgreSQL schema SCHEMA for all tables, indexes, and functions in
-    the middle (default is no schema, i.e. the `public` schema is used).
+    the middle (default is `public`).
 
 \--middle-way-node-index-id-shift=SHIFT
 :   Set ID shift for way node bucket index in middle. Experts only. See
     documentation for details.
+
+\--middle-database-format=FORMAT
+:   Set the database format for the middle tables to FORMAT. Allowed formats
+    are **legacy** and **new**. The **legacy** format is the old format that
+    will eventually be deprecated and removed but is currently still the
+    default. The **new** format was introduced in version 1.9.0 and is still
+    experimental. See the manual for details on these formats. (Only works
+    with **\--slim**. In append mode osm2pgsql will automatically detect the
+    database format, so don't use this with **-a, \--append**.)
+
+\--middle-with-nodes
+:   Used together with the **new** middle database format when a flat nodes
+    file is used to force storing nodes with tags in the database, too.
 
 # OUTPUT OPTIONS
 
@@ -262,8 +275,7 @@ mandatory for short options too.
 
 \--output-pgsql-schema=SCHEMA
 :   Use PostgreSQL schema SCHEMA for all tables, indexes, and functions in
-    the pgsql output (default is no schema, i.e. the `public` schema
-    is used).
+    the pgsql output (default is `public`).
 
 # EXPIRE OPTIONS
 

@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -18,6 +18,7 @@
 #include "format.hpp"
 #include "options.hpp"
 #include "pgsql.hpp"
+#include "pgsql-capabilities.hpp"
 #include <catch.hpp>
 
 #ifdef _MSC_VER
@@ -40,9 +41,9 @@ public:
 
     std::string result_as_string(std::string const &cmd) const
     {
-        pg_result_t const res = query(PGRES_TUPLES_OK, cmd);
+        pg_result_t const res = exec(cmd);
         REQUIRE(res.num_tuples() == 1);
-        return res.get_value_as_string(0, 0);
+        return std::string{res.get(0, 0)};
     }
 
     int result_as_int(std::string const &cmd) const
@@ -62,14 +63,14 @@ public:
 
     void assert_null(std::string const &cmd) const
     {
-        pg_result_t const res = query(PGRES_TUPLES_OK, cmd);
+        pg_result_t const res = exec(cmd);
         REQUIRE(res.num_tuples() == 1);
         REQUIRE(res.is_null(0, 0));
     }
 
     pg_result_t require_row(std::string const &cmd) const
     {
-        pg_result_t res = query(PGRES_TUPLES_OK, cmd);
+        pg_result_t res = exec(cmd);
         REQUIRE(res.num_tuples() == 1);
 
         return res;
@@ -77,15 +78,16 @@ public:
 
     int get_count(char const *table_name, std::string const &where = "") const
     {
-        auto const query = "SELECT count(*) FROM {} {} {}"_format(
-            table_name, (where.empty() ? "" : "WHERE"), where);
+        auto const query =
+            fmt::format("SELECT count(*) FROM {} {} {}", table_name,
+                        (where.empty() ? "" : "WHERE"), where);
 
         return result_as_int(query);
     }
 
     void require_has_table(char const *table_name) const
     {
-        auto const where = "oid = '{}'::regclass"_format(table_name);
+        auto const where = fmt::format("oid = '{}'::regclass", table_name);
 
         REQUIRE(get_count("pg_catalog.pg_class", where) == 1);
     }
@@ -99,14 +101,16 @@ public:
         try {
             conn_t conn{"dbname=postgres"};
 
-            m_db_name = "osm2pgsql-test-{}-{}"_format(getpid(), time(nullptr));
-            conn.exec("DROP DATABASE IF EXISTS \"{}\""_format(m_db_name));
-            conn.exec("CREATE DATABASE \"{}\" WITH ENCODING 'UTF8'"_format(
-                m_db_name));
+            m_db_name =
+                fmt::format("osm2pgsql-test-{}-{}", getpid(), time(nullptr));
+            conn.exec(R"(DROP DATABASE IF EXISTS "{}")", m_db_name);
+            conn.exec(R"(CREATE DATABASE "{}" WITH ENCODING 'UTF8')",
+                      m_db_name);
 
             conn_t local = connect();
             local.exec("CREATE EXTENSION postgis");
             local.exec("CREATE EXTENSION hstore");
+            init_database_capabilities(local);
         } catch (std::runtime_error const &e) {
             fmt::print(stderr,
                        "Test database cannot be created: {}\n"
@@ -134,7 +138,7 @@ public:
             }
             try {
                 conn_t conn{"dbname=postgres"};
-                conn.exec("DROP DATABASE IF EXISTS \"{}\""_format(m_db_name));
+                conn.exec(R"(DROP DATABASE IF EXISTS "{}")", m_db_name);
             } catch (...) {
                 fprintf(stderr, "DROP DATABASE failed. Ignored.\n");
             }
@@ -144,14 +148,6 @@ public:
     conn_t connect() const { return conn_t{conninfo()}; }
 
     std::string conninfo() const { return "dbname=" + m_db_name; }
-
-    database_options_t db_options() const
-    {
-        database_options_t opt;
-        opt.db = m_db_name;
-
-        return opt;
-    }
 
 private:
     std::string m_db_name;

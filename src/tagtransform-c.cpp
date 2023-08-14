@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -18,7 +18,7 @@
 
 namespace {
 
-static const struct
+const struct
 {
     char const *highway;
     int offset;
@@ -40,7 +40,9 @@ static const struct
               {"primary", 37, true},        {"trunk", 38, true},
               {"motorway", 39, true}};
 
-void add_z_order(taglist_t *tags, bool *roads)
+} // anonymous namespace
+
+static void add_z_order(taglist_t *tags, bool *roads)
 {
     std::string const *const layer = tags->get("layer");
     std::string const *const highway = tags->get("highway");
@@ -51,12 +53,12 @@ void add_z_order(taglist_t *tags, bool *roads)
 
     int z_order = 0;
 
-    int l = layer ? (int)strtol(layer->c_str(), nullptr, 10) : 0;
+    int const l = layer ? (int)std::strtol(layer->c_str(), nullptr, 10) : 0;
     z_order = 100 * l;
     *roads = false;
 
     if (highway) {
-        for (const auto &layer : layers) {
+        for (auto const &layer : layers) {
             if (*highway == layer.highway) {
                 z_order += layer.offset;
                 *roads = layer.roads;
@@ -82,11 +84,8 @@ void add_z_order(taglist_t *tags, bool *roads)
         z_order -= 100;
     }
 
-    util::integer_to_buffer z{z_order};
-    tags->add_tag("z_order", z.c_str());
+    tags->add_tag("z_order", fmt::to_string(z_order));
 }
-
-} // anonymous namespace
 
 c_tagtransform_t::c_tagtransform_t(options_t const *options, export_list exlist)
 : m_options(options), m_export_list(std::move(exlist))

@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -60,11 +60,11 @@ void db_deleter_by_type_and_id_t::delete_rows(std::string const &table,
 
         auto const pos = column.find(',');
         assert(pos != std::string::npos);
-        std::string type = column.substr(0, pos);
+        std::string const type = column.substr(0, pos);
 
         fmt::format_to(std::back_inserter(sql),
                        ") AS t (osm_type, osm_id) WHERE"
-                       " p.{} = t.osm_type AND p.{} = t.osm_id",
+                       " p.{} = t.osm_type::char(1) AND p.{} = t.osm_id",
                        type, column.c_str() + pos + 1);
     } else {
         fmt::format_to(std::back_inserter(sql),
@@ -106,7 +106,7 @@ void db_copy_thread_t::add_buffer(std::unique_ptr<db_cmd_t> &&buffer)
 void db_copy_thread_t::sync_and_wait()
 {
     std::promise<void> barrier;
-    std::future<void> sync = barrier.get_future();
+    std::future<void> const sync = barrier.get_future();
     add_buffer(std::make_unique<db_cmd_sync_t>(std::move(barrier)));
     sync.wait();
 }
@@ -131,9 +131,13 @@ void db_copy_thread_t::thread_t::operator()()
         // Let commits happen faster by delaying when they actually occur.
         m_conn->exec("SET synchronous_commit = off");
 
-        // Do not show messages about invalid geometries (they are removed
-        // by the trigger).
-        m_conn->exec("SET client_min_messages = WARNING");
+        // Disable sequential scan on database tables in the copy threads.
+        // The copy threads only do COPYs (which are unaffected by this
+        // setting) and DELETEs which we know benefit from the index. For
+        // some reason PostgreSQL chooses in some cases not to use that index,
+        // possibly because the DELETEs get a large list of ids to delete of
+        // which many are not in the table which confuses the query planner.
+        m_conn->exec("SET enable_seqscan = off");
 
         bool done = false;
         while (!done) {
@@ -167,7 +171,7 @@ void db_copy_thread_t::thread_t::operator()()
         m_conn.reset();
     } catch (std::runtime_error const &e) {
         log_error("DB copy thread failed: {}", e.what());
-        exit(2);
+        std::exit(2); // NOLINT(concurrency-mt-unsafe)
     }
 }
 
@@ -184,7 +188,7 @@ void db_copy_thread_t::thread_t::write_to_db(db_cmd_copy_t *buffer)
         start_copy(buffer->target);
     }
 
-    m_conn->copy_data(buffer->buffer, buffer->target->name);
+    m_conn->copy_send(buffer->buffer, buffer->target->name);
 }
 
 void db_copy_thread_t::thread_t::start_copy(
@@ -205,7 +209,7 @@ void db_copy_thread_t::thread_t::start_copy(
     }
 
     sql.push_back('\0');
-    m_conn->query(PGRES_COPY_IN, sql.data());
+    m_conn->copy_start(sql.data());
 
     m_inflight = target;
 }
@@ -213,7 +217,7 @@ void db_copy_thread_t::thread_t::start_copy(
 void db_copy_thread_t::thread_t::finish_copy()
 {
     if (m_inflight) {
-        m_conn->end_copy(m_inflight->name);
+        m_conn->copy_end(m_inflight->name);
         m_inflight.reset();
     }
 }

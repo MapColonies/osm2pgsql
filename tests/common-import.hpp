@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2022 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2023 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -85,13 +85,13 @@ public:
                   std::back_inserter(m_objects));
     }
 
-    void add(std::initializer_list<const char *> const &objects)
+    void add(std::initializer_list<char const *> const &objects)
     {
         std::copy(std::begin(objects), std::end(objects),
                   std::back_inserter(m_objects));
     }
 
-    const char *operator()()
+    char const *operator()()
     {
         std::sort(m_objects.begin(), m_objects.end(),
                   [](std::string const &a, std::string const &b) {
@@ -134,7 +134,7 @@ public:
                     std::initializer_list<std::string> input_data,
                     std::string const &format = "opl")
     {
-        options.database_options = m_db.db_options();
+        options.conninfo = m_db.conninfo();
 
         auto thread_pool = std::make_shared<thread_pool_t>(1U);
         auto middle = create_middle(thread_pool, options);
@@ -172,7 +172,7 @@ public:
 
     void run_file(options_t options, char const *file = nullptr)
     {
-        options.database_options = m_db.db_options();
+        options.conninfo = m_db.conninfo();
 
         auto thread_pool = std::make_shared<thread_pool_t>(1U);
         auto middle = std::make_shared<middle_ram_t>(thread_pool, &options);

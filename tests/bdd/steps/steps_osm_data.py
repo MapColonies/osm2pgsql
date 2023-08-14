@@ -2,7 +2,7 @@
 #
 # This file is part of osm2pgsql (https://osm2pgsql.org/).
 #
-# Copyright (C) 2022 by the osm2pgsql developer community.
+# Copyright (C) 2023 by the osm2pgsql developer community.
 # For a full list of authors see the git log.
 """
 Steps for creating the OSM import file.
@@ -31,11 +31,13 @@ def osm_define_node_grid(context, step, origin_x, origin_y):
 
 @given("the (?P<formatted>python-formatted )?OSM data")
 def osm_define_data(context, formatted):
+    context.import_file = None
     data = context.text
     if formatted:
         data = eval('f"""' + data + '"""')
 
     for line in data.split('\n'):
+        line = line.strip()
         if line:
             assert line[0] in ('n', 'w', 'r')
             context.import_data[line[0]].append(line)
