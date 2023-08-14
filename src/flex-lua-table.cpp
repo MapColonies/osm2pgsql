@@ -208,7 +208,7 @@ static void parse_and_set_expire_options(lua_State *lua_state,
         return;
     }
 
-    if (!column->is_geometry_column() || column->srid() != 3857) {
+    if (!column->is_geometry_column() /* || column->srid() != 3857 */) {
         throw std::runtime_error{"Expire only allowed for geometry"
                                  " columns in Web Mercator projection."};
     }
