@@ -38,10 +38,13 @@ def get_import_file(context):
 
 
 def run_osm2pgsql(context, output):
-    assert output in ('flex', 'pgsql', 'gazetteer', 'none')
+    assert output in ('flex', 'pgsql', 'gazetteer', 'null', 'nooutput')
 
     cmdline = [str(Path(context.config.userdata['BINARY']).resolve())]
-    cmdline.extend(('-O', output))
+
+    if output != 'nooutput':
+        cmdline.extend(('-O', output))
+
     cmdline.extend(context.osm2pgsql_params)
 
     # convert table items to CLI arguments and inject constants to placeholders
@@ -145,7 +148,7 @@ def setup_style_file(context, style):
     context.osm2pgsql_params.extend(('-S', str(context.test_data_dir / style)))
 
 
-@when("running osm2pgsql (?P<output>\w+)(?: with parameters)?")
+@when(r"running osm2pgsql (?P<output>\w+)(?: with parameters)?")
 def execute_osm2pgsql_successfully(context, output):
     returncode = run_osm2pgsql(context, output)
 
@@ -157,7 +160,7 @@ def execute_osm2pgsql_successfully(context, output):
            f"Output:\n{context.osm2pgsql_outdata[0]}\n{context.osm2pgsql_outdata[1]}\n"
 
 
-@then("running osm2pgsql (?P<output>\w+)(?: with parameters)? fails")
+@then(r"running osm2pgsql (?P<output>\w+)(?: with parameters)? fails")
 def execute_osm2pgsql_with_failure(context, output):
     returncode = run_osm2pgsql(context, output)
 
@@ -176,7 +179,7 @@ def execute_osm2pgsql_replication_successfully(context):
            f"Output:\n{context.osm2pgsql_outdata[0]}\n{context.osm2pgsql_outdata[1]}\n"
 
 
-@then("running osm2pgsql-replication fails(?: with returncode (?P<expected>\d+))?")
+@then(r"running osm2pgsql-replication fails(?: with returncode (?P<expected>\d+))?")
 def execute_osm2pgsql_replication_successfully(context, expected):
     returncode = run_osm2pgsql_replication(context)
 
@@ -187,7 +190,7 @@ def execute_osm2pgsql_replication_successfully(context, expected):
                f"Output:\n{context.osm2pgsql_outdata[0]}\n{context.osm2pgsql_outdata[1]}\n"
 
 
-@then("the (?P<kind>\w+) output contains")
+@then(r"the (?P<kind>\w+) output contains")
 def check_program_output(context, kind):
     if kind == 'error':
         s = context.osm2pgsql_outdata[1]

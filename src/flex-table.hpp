@@ -59,7 +59,10 @@ public:
         permanent
     };
 
-    explicit flex_table_t(std::string name) : m_name(std::move(name)) {}
+    flex_table_t(std::string schema, std::string name)
+    : m_schema(std::move(schema)), m_name(std::move(name))
+    {
+    }
 
     std::string const &name() const noexcept { return m_name; }
 
@@ -195,11 +198,11 @@ public:
     bool has_columns_with_expire() const noexcept;
 
 private:
+    /// The schema this table is in
+    std::string m_schema;
+
     /// The name of the table
     std::string m_name;
-
-    /// The schema this table is in
-    std::string m_schema{"public"};
 
     /// The table space used for this table (empty for default tablespace)
     std::string m_data_tablespace;
@@ -250,11 +253,10 @@ public:
                        std::shared_ptr<db_copy_thread_t> const &copy_thread)
     : m_proj(reprojection::create_projection(table->srid())), m_table(table),
       m_target(std::make_shared<db_target_descr_t>(
-          table->name(), table->id_column_names(),
+          table->schema(), table->name(), table->id_column_names(),
           table->build_sql_column_list())),
       m_copy_mgr(copy_thread), m_db_connection(nullptr)
     {
-        m_target->schema = table->schema();
     }
 
     void connect(std::string const &conninfo);

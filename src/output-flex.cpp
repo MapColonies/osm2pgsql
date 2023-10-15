@@ -48,6 +48,9 @@
 #include <stdexcept>
 #include <string>
 
+// Mutex used to coordinate access to Lua code
+static std::mutex lua_mutex;
+
 // Lua can't call functions on C++ objects directly. This macro defines simple
 // C "trampoline" functions which are called from Lua which get the current
 // context (the output_flex_t object) and call the respective function on the
@@ -402,6 +405,7 @@ int output_flex_t::app_define_table()
     }
 
     return setup_flex_table(lua_state(), m_tables.get(), m_expire_outputs.get(),
+                            get_options()->dbschema,
                             get_options()->slim && !get_options()->droptemp,
                             get_options()->append);
 }
@@ -414,7 +418,8 @@ int output_flex_t::app_define_expire_output()
             " main Lua code, not in any of the callbacks."};
     }
 
-    return setup_flex_expire_output(lua_state(), m_expire_outputs.get());
+    return setup_flex_expire_output(lua_state(), get_options()->dbschema,
+                                    m_expire_outputs.get());
 }
 
 // Check that the first element on the Lua stack is a "type_name"
@@ -581,6 +586,13 @@ int output_flex_t::table_add_row()
         luaL_checktype(lua_state(), 2, LUA_TTABLE);
     }
     lua_remove(lua_state(), 1);
+
+    if (m_add_row_has_never_been_called) {
+        m_add_row_has_never_been_called = false;
+        log_warn("The add_row() function is deprecated. Please read");
+        log_warn("https://osm2pgsql.org/doc/tutorials/"
+                 "switching-from-add-row-to-insert/");
+    }
 
     if (m_calling_context == calling_context::process_node) {
         if (!table.matches_type(osmium::item_type::node)) {
@@ -893,9 +905,6 @@ int output_flex_t::expire_output_table()
 void output_flex_t::call_lua_function(prepared_lua_function_t func,
                                       osmium::OSMObject const &object)
 {
-    static std::mutex lua_mutex;
-    std::lock_guard<std::mutex> const guard{lua_mutex};
-
     m_calling_context = func.context();
 
     lua_pushvalue(lua_state(), func.index()); // the function to call
@@ -912,6 +921,13 @@ void output_flex_t::call_lua_function(prepared_lua_function_t func,
     m_calling_context = calling_context::main;
 }
 
+void output_flex_t::get_mutex_and_call_lua_function(
+    prepared_lua_function_t func, osmium::OSMObject const &object)
+{
+    std::lock_guard<std::mutex> const guard{lua_mutex};
+    call_lua_function(func, object);
+}
+
 void output_flex_t::pending_way(osmid_t id)
 {
     if (!m_process_way) {
@@ -924,7 +940,7 @@ void output_flex_t::pending_way(osmid_t id)
 
     way_delete(id);
 
-    call_lua_function(m_process_way, m_way_cache.get());
+    get_mutex_and_call_lua_function(m_process_way, m_way_cache.get());
 }
 
 void output_flex_t::select_relation_members()
@@ -933,6 +949,9 @@ void output_flex_t::select_relation_members()
         return;
     }
 
+    // We can not use get_mutex_and_call_lua_function() here, because we need
+    // the mutex to stick around as long as we are looking at the Lua stack.
+    std::lock_guard<std::mutex> const guard{lua_mutex};
     call_lua_function(m_select_relation_members, m_relation_cache.get());
 
     // If the function returned nil there is nothing to be marked.
@@ -1012,7 +1031,8 @@ void output_flex_t::pending_relation(osmid_t id)
     delete_from_tables(osmium::item_type::relation, id);
 
     if (m_process_relation) {
-        call_lua_function(m_process_relation, m_relation_cache.get());
+        get_mutex_and_call_lua_function(m_process_relation,
+                                        m_relation_cache.get());
     }
 }
 
@@ -1027,7 +1047,7 @@ void output_flex_t::pending_relation_stage1c(osmid_t id)
     }
 
     m_disable_add_row = true;
-    call_lua_function(m_process_relation, m_relation_cache.get());
+    get_mutex_and_call_lua_function(m_process_relation, m_relation_cache.get());
     m_disable_add_row = false;
 }
 
@@ -1102,7 +1122,7 @@ void output_flex_t::node_add(osmium::Node const &node)
     }
 
     m_context_node = &node;
-    call_lua_function(m_process_node, node);
+    get_mutex_and_call_lua_function(m_process_node, node);
     m_context_node = nullptr;
 }
 
@@ -1115,7 +1135,7 @@ void output_flex_t::way_add(osmium::Way *way)
     }
 
     m_way_cache.init(way);
-    call_lua_function(m_process_way, m_way_cache.get());
+    get_mutex_and_call_lua_function(m_process_way, m_way_cache.get());
 }
 
 void output_flex_t::relation_add(osmium::Relation const &relation)
@@ -1126,7 +1146,7 @@ void output_flex_t::relation_add(osmium::Relation const &relation)
 
     m_relation_cache.init(relation);
     select_relation_members();
-    call_lua_function(m_process_relation, relation);
+    get_mutex_and_call_lua_function(m_process_relation, relation);
 }
 
 void output_flex_t::delete_from_table(table_connection_t *table_connection,
@@ -1516,7 +1536,7 @@ void output_flex_t::reprocess_marked()
         }
         way_delete(id);
         if (m_process_way) {
-            call_lua_function(m_process_way, m_way_cache.get());
+            get_mutex_and_call_lua_function(m_process_way, m_way_cache.get());
         }
     }
 

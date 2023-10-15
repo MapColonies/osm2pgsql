@@ -17,11 +17,11 @@ jobs:
       LUA_VERSION: 5.4
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install prerequisites
         run: |
-          brew install lua boost postgis pandoc cimg potrace nlohmann-json
+          brew install boost lua nlohmann-json opencv pandoc postgis potrace
           pip3 install psycopg2 behave osmium
           pg_ctl -D /usr/local/var/postgres init
           pg_ctl -D /usr/local/var/postgres start
@@ -58,9 +58,10 @@ jobs:
       POSTGRESQL_VERSION: 9.6
       POSTGIS_VERSION: 2.5
       BUILD_TYPE: Release
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
@@ -75,9 +76,10 @@ jobs:
       POSTGRESQL_VERSION: 9.6
       POSTGIS_VERSION: 2.5
       BUILD_TYPE: Release
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
@@ -93,9 +95,10 @@ jobs:
       POSTGRESQL_VERSION: 10
       POSTGIS_VERSION: 3
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
@@ -111,13 +114,14 @@ jobs:
       POSTGRESQL_VERSION: 11
       POSTGIS_VERSION: 2.5
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu20-pg12-gcc10-jit:
+  ubuntu20-pg13-gcc10-jit:
     runs-on: ubuntu-20.04
 
     env:
@@ -125,17 +129,18 @@ jobs:
       CXX: g++-10
       LUA_VERSION: 5.3
       LUAJIT_OPTION: ON
-      POSTGRESQL_VERSION: 12
+      POSTGRESQL_VERSION: 13
       POSTGIS_VERSION: 2.5
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
 
-  ubuntu20-pg13-clang10-jit:
+  ubuntu20-pg15-clang10-jit:
     runs-on: ubuntu-20.04
 
     env:
@@ -143,16 +148,17 @@ jobs:
       CXX: clang++-10
       LUA_VERSION: 5.3
       LUAJIT_OPTION: ON
-      POSTGRESQL_VERSION: 13
+      POSTGRESQL_VERSION: 15
       POSTGIS_VERSION: 3
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu20-pg13-clang10-proj6:
+  ubuntu20-pg15-clang10-proj6:
     runs-on: ubuntu-20.04
 
     env:
@@ -160,17 +166,18 @@ jobs:
       CXX: clang++-10
       LUA_VERSION: 5.3
       LUAJIT_OPTION: OFF
-      POSTGRESQL_VERSION: 13
+      POSTGRESQL_VERSION: 15
       POSTGIS_VERSION: 3
       USE_PROJ_LIB: 6
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu20-pg13-clang10-noproj:
+  ubuntu20-pg15-clang10-noproj:
     runs-on: ubuntu-20.04
 
     env:
@@ -178,17 +185,18 @@ jobs:
       CXX: clang++-10
       LUA_VERSION: 5.3
       LUAJIT_OPTION: OFF
-      POSTGRESQL_VERSION: 13
+      POSTGRESQL_VERSION: 15
       POSTGIS_VERSION: 3
       USE_PROJ_LIB: off
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu20-pg13-clang10-cpp17:
+  ubuntu20-pg16-clang10:
     runs-on: ubuntu-20.04
 
     env:
@@ -196,13 +204,14 @@ jobs:
       CXX: clang++-10
       LUA_VERSION: 5.3
       LUAJIT_OPTION: OFF
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 16
       POSTGIS_VERSION: 3
       USE_PROJ_LIB: 6
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
@@ -217,9 +226,10 @@ jobs:
       POSTGRESQL_VERSION: 13
       POSTGIS_VERSION: 2.5
       BUILD_TYPE: Release
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
@@ -232,13 +242,14 @@ jobs:
       POSTGRESQL_VERSION: 13
       POSTGIS_VERSION: 2.5
       BUILD_TYPE: Release
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu22-pg14-clang14-jit:
+  ubuntu22-pg16-clang14-jit:
     runs-on: ubuntu-22.04
 
     env:
@@ -246,16 +257,17 @@ jobs:
       CXX: clang++-14
       LUA_VERSION: 5.4
       LUAJIT_OPTION: ON
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 16
       POSTGIS_VERSION: 3
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu22-pg14-clang14-proj6:
+  ubuntu22-pg16-clang14-proj6:
     runs-on: ubuntu-22.04
 
     env:
@@ -263,17 +275,18 @@ jobs:
       CXX: clang++-14
       LUA_VERSION: 5.4
       LUAJIT_OPTION: OFF
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 16
       POSTGIS_VERSION: 3
       USE_PROJ_LIB: 6
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu22-pg14-clang14-noproj:
+  ubuntu22-pg16-clang14-noproj:
     runs-on: ubuntu-22.04
 
     env:
@@ -281,17 +294,18 @@ jobs:
       CXX: clang++-14
       LUA_VERSION: 5.3
       LUAJIT_OPTION: OFF
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 16
       POSTGIS_VERSION: 3
       USE_PROJ_LIB: off
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu22-pg14-clang14-cpp17:
+  ubuntu22-pg15-clang14:
     runs-on: ubuntu-22.04
 
     env:
@@ -299,17 +313,18 @@ jobs:
       CXX: clang++-14
       LUA_VERSION: 5.4
       LUAJIT_OPTION: OFF
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 15
       POSTGIS_VERSION: 3
       USE_PROJ_LIB: 6
       BUILD_TYPE: Debug
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu22-pg14-gcc12-release:
+  ubuntu22-pg16-gcc12-release:
     runs-on: ubuntu-22.04
 
     env:
@@ -318,32 +333,34 @@ jobs:
       EXTRA_FLAGS: -Wno-stringop-overread
       LUA_VERSION: 5.4
       LUAJIT_OPTION: ON
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 16
       POSTGIS_VERSION: 3
       BUILD_TYPE: Release
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu22-pg14-gcc12-release-nolua:
+  ubuntu22-pg16-gcc12-release-nolua:
     runs-on: ubuntu-22.04
 
     env:
       CC: gcc-12
       CXX: g++-12
       EXTRA_FLAGS: -Wno-stringop-overread
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 16
       POSTGIS_VERSION: 3
       BUILD_TYPE: Release
+      PSYCOPG: 2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu22-pg14-clang14-cpp20:
+  ubuntu22-pg16-clang14-cpp20:
     runs-on: ubuntu-22.04
 
     env:
@@ -351,17 +368,18 @@ jobs:
       CXX: clang++-14
       LUA_VERSION: 5.3
       LUAJIT_OPTION: OFF
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 16
       POSTGIS_VERSION: 3
       CPP_VERSION: 20
       BUILD_TYPE: Debug
+      PSYCOPG: 3
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu22-pg14-gcc12-cpp20:
+  ubuntu22-pg16-gcc12-cpp20:
     runs-on: ubuntu-22.04
 
     env:
@@ -369,13 +387,14 @@ jobs:
       CXX: g++-12
       LUA_VERSION: 5.3
       LUAJIT_OPTION: OFF
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 16
       POSTGIS_VERSION: 3
       CPP_VERSION: 20
       BUILD_TYPE: Debug
+      PSYCOPG: 3
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
@@ -392,7 +411,7 @@ jobs:
       VCPKG_DEFAULT_BINARY_CACHE: C:/vcpkg_binary_cache
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/cache@v3
         with:
           path: |
@@ -437,7 +456,7 @@ jobs:
       OSMURL: https://download.geofabrik.de/europe/monaco-latest.osm.bz2
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: actions/cache@v3
         with:
           path: |
