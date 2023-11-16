@@ -1,7 +1,7 @@
 
 cmake_minimum_required(VERSION 3.8.0)
 
-project(osm2pgsql VERSION 1.9.2 LANGUAGES CXX C)
+project(osm2pgsql VERSION 1.10.0 LANGUAGES CXX C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -211,7 +211,7 @@ include_directories(SYSTEM ${NLOHMANN_INCLUDE_DIR})
 find_path(POTRACE_INCLUDE_DIR potracelib.h)
 find_library(POTRACE_LIBRARY NAMES potrace)
 
-find_package(OpenCV OPTIONAL_COMPONENTS core imgcodecs imgproc)
+find_package(OpenCV QUIET OPTIONAL_COMPONENTS core imgcodecs imgproc)
 
 ############### Libraries are found now ########################
 

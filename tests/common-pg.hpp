@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include "format.hpp"
 #include "options.hpp"
@@ -30,9 +31,8 @@
 #include <unistd.h>
 #endif
 
-namespace testing {
 /// Helper classes for postgres connections
-namespace pg {
+namespace testing::pg {
 
 class conn_t : public pg_conn_t
 {
@@ -76,7 +76,8 @@ public:
         return res;
     }
 
-    int get_count(char const *table_name, std::string const &where = "") const
+    int get_count(std::string_view table_name,
+                  std::string_view where = "") const
     {
         auto const query =
             fmt::format("SELECT count(*) FROM {} {} {}", table_name,
@@ -85,7 +86,7 @@ public:
         return result_as_int(query);
     }
 
-    void require_has_table(char const *table_name) const
+    void require_has_table(std::string_view table_name) const
     {
         auto const where = fmt::format("oid = '{}'::regclass", table_name);
 
@@ -153,7 +154,6 @@ private:
     std::string m_db_name;
 };
 
-} // namespace pg
-} // namespace testing
+} // namespace testing::pg
 
 #endif // OSM2PGSQL_TESTS_COMMON_PG_HPP

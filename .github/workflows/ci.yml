@@ -8,7 +8,6 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - "macos-11"
           - "macos-12" # latest
           - "macos-13"
     runs-on: ${{ matrix.os }}
@@ -360,12 +359,12 @@ jobs:
       - uses: ./.github/actions/ubuntu-prerequisites
       - uses: ./.github/actions/build-and-test
 
-  ubuntu22-pg16-clang14-cpp20:
+  ubuntu22-pg16-clang15-cpp20:
     runs-on: ubuntu-22.04
 
     env:
-      CC: clang-14
-      CXX: clang++-14
+      CC: clang-15
+      CXX: clang++-15
       LUA_VERSION: 5.3
       LUAJIT_OPTION: OFF
       POSTGRESQL_VERSION: 16
@@ -437,7 +436,7 @@ jobs:
         run: |
           mkdir c:/artifact/
           mkdir c:/artifact/osm2pgsql-bin
-          cp -r Release/* ../README.md ../COPYING ../*.style ../scripts ../flex-config c:/artifact/osm2pgsql-bin/
+          cp -r Release/* ../README.md ../COPYING ../*.style ../scripts ../flex-config c:/vcpkg/installed/x64-windows/share/proj/proj.db c:/artifact/osm2pgsql-bin/
         shell: bash
         working-directory: build
         if: matrix.os == 'windows-2022'
