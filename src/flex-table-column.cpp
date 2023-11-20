@@ -201,7 +201,7 @@ std::string flex_table_column_t::sql_create() const
 void flex_table_column_t::add_expire(expire_config_t const &config)
 {
     assert(is_geometry_column());
-    assert(srid() == 3857);
+    // assert(srid() == 3857);
     m_expires.push_back(config);
 }
 

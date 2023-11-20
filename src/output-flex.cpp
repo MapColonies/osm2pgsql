@@ -1307,7 +1307,7 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
         eo.set_maxzoom(options.expire_tiles_zoom);
 
         for (auto &table : *m_tables) {
-            if (table.has_geom_column() && table.geom_column().srid() == 3857) {
+            if (table.has_geom_column() /*&& table.geom_column().srid() == 3857*/) {
                 expire_config_t config{};
                 config.expire_output = m_expire_outputs->size() - 1;
                 if (options.expire_tiles_max_bbox > 0.0) {
