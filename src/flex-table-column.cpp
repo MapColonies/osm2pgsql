@@ -62,6 +62,12 @@ static table_column_type get_column_type_from_string(std::string const &type)
         throw fmt_error("Unknown column type '{}'.", type);
     }
 
+    if (column_type->type == table_column_type::area) {
+        log_warn("The 'area' column type is deprecated. Please read");
+        log_warn("https://osm2pgsql.org/doc/tutorials/"
+                 "switching-from-add-row-to-insert/");
+    }
+
     return column_type->type;
 }
 
@@ -195,7 +201,7 @@ std::string flex_table_column_t::sql_create() const
 void flex_table_column_t::add_expire(expire_config_t const &config)
 {
     assert(is_geometry_column());
-    assert(srid() == 3857);
+    // assert(srid() == 3857);
     m_expires.push_back(config);
 }
 

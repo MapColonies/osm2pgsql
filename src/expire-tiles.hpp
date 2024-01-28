@@ -93,6 +93,7 @@ private:
      */
     geom::point_t coords_to_tile(geom::point_t const &point);
 
+
     /**
      * Expire a single tile.
      *

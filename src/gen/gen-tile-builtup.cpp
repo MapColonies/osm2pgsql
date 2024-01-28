@@ -173,7 +173,7 @@ static void draw_from_db(double margin, canvas_list_t *canvas_list,
                                 box.max_x(), box.max_y());
 
         for (int n = 0; n < result.num_tuples(); ++n) {
-            auto const geom = ewkb_to_geom(decode_hex(result.get_value(n, 0)));
+            auto const geom = ewkb_to_geom(decode_hex(result.get(n, 0)));
             cc.canvas.draw(geom, tile);
         }
     }
@@ -181,6 +181,7 @@ static void draw_from_db(double margin, canvas_list_t *canvas_list,
 
 void gen_tile_builtup_t::process(tile_t const &tile)
 {
+    connection().exec("BEGIN");
     delete_existing(tile);
 
     canvas_list_t canvas_list;
@@ -262,6 +263,7 @@ void gen_tile_builtup_t::process(tile_t const &tile)
             connection().exec_prepared("insert_geoms", wkb, tile.x(), tile.y());
         }
     }
+    connection().exec("COMMIT");
     timer(m_timer_write).stop();
     log_gen("Inserted {} generalized polygons", geometries.size());
 }

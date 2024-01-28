@@ -163,7 +163,7 @@ static void draw_from_db(double margin, unsigned int image_extent,
 
     for (int n = 0; n < result.num_tuples(); ++n) {
         std::string param = result.get_value(n, 1);
-        auto const geom = ewkb_to_geom(decode_hex(result.get_value(n, 0)));
+        auto const geom = ewkb_to_geom(decode_hex(result.get(n, 0)));
 
         auto const [it, success] = canvas_list->try_emplace(
             std::move(param), image_extent, image_buffer);
@@ -174,6 +174,7 @@ static void draw_from_db(double margin, unsigned int image_extent,
 
 void gen_tile_raster_union_t::process(tile_t const &tile)
 {
+    connection().exec("BEGIN");
     delete_existing(tile);
 
     canvas_list_t canvas_list;
@@ -244,6 +245,7 @@ void gen_tile_raster_union_t::process(tile_t const &tile)
         timer(m_timer_write).stop();
         log_gen("Inserted {} generalized polygons", geometries.size());
     }
+    connection().exec("COMMIT");
 }
 
 void gen_tile_raster_union_t::post()

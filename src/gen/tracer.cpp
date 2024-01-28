@@ -26,20 +26,33 @@ tracer_t::trace(canvas_t const &canvas, tile_t const &tile, double min_area)
 {
     prepare(canvas);
 
-    m_state.reset(potrace_trace(m_param.get(), &m_bitmap));
-    if (!m_state || m_state->status != POTRACE_STATUS_OK) {
+    potrace_bitmap_t bitmap{int(canvas.size()), int(canvas.size()),
+                            int(canvas.size() / bits_per_word), m_bits.data()};
+
+    std::unique_ptr<potrace_state_t, potrace_state_deleter> state{
+        potrace_trace(m_param.get(), &bitmap)};
+
+    if (!state || state->status != POTRACE_STATUS_OK) {
         throw std::runtime_error{"potrace failed"};
     }
 
-    return build_geometries(tile, m_state->plist, min_area);
+    return build_geometries(tile, state->plist, min_area);
 }
 
 void tracer_t::reset()
 {
     m_bits.clear();
-    m_state.reset();
     m_num_points = 0;
 }
+
+static potrace_word bit_squeeze(potrace_word w, unsigned char const *d) noexcept
+{
+    return (0x80U & d[0]) | (0x40U & d[1]) | (0x20U & d[2]) | (0x10U & d[3]) |
+           (0x08U & d[4]) | (0x04U & d[5]) | (0x02U & d[6]) | (0x01U & d[7]) |
+           w;
+}
+
+static_assert(sizeof(potrace_word) == 8);
 
 void tracer_t::prepare(canvas_t const &canvas) noexcept
 {
@@ -48,18 +61,19 @@ void tracer_t::prepare(canvas_t const &canvas) noexcept
 
     m_bits.reserve((size * size) / bits_per_word);
 
-    unsigned char const *d = canvas.begin();
-    while (d != canvas.end()) {
-        potrace_word w = 0x1U & *d++;
-        for (std::size_t n = 1; n < bits_per_word; ++n) {
-            w <<= 1U;
-            assert(d != canvas.end());
-            w |= 0x1U & *d++;
-        }
+    for (unsigned char const *d = canvas.begin(); d != canvas.end(); d += 8) {
+        auto w = bit_squeeze(0, d);
+
+        w = bit_squeeze(w << 8U, d += 8);
+        w = bit_squeeze(w << 8U, d += 8);
+        w = bit_squeeze(w << 8U, d += 8);
+        w = bit_squeeze(w << 8U, d += 8);
+        w = bit_squeeze(w << 8U, d += 8);
+        w = bit_squeeze(w << 8U, d += 8);
+        w = bit_squeeze(w << 8U, d += 8);
+
         m_bits.push_back(w);
     }
-
-    m_bitmap = {int(size), int(size), int(size / bits_per_word), m_bits.data()};
 }
 
 std::vector<geom::geometry_t>

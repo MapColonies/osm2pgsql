@@ -64,7 +64,7 @@ static void send_id_list(pg_conn_t const &db_connection,
     }
 
     auto const sql = fmt::format("COPY {} FROM STDIN", table);
-    db_connection.copy_start(sql.c_str());
+    db_connection.copy_start(sql);
     db_connection.copy_send(data, table);
     db_connection.copy_end(table);
 }
@@ -73,8 +73,8 @@ static void load_id_list(pg_conn_t const &db_connection,
                          std::string const &table,
                          osmium::index::IdSetSmall<osmid_t> *ids)
 {
-    auto const res =
-        db_connection.exec(fmt::format("SELECT id FROM {} ORDER BY id", table));
+    auto const res = db_connection.exec(
+        fmt::format("SELECT DISTINCT id FROM {} ORDER BY id", table));
     for (int n = 0; n < res.num_tuples(); ++n) {
         ids->set(osmium::string_to_object_id(res.get_value(n, 0)));
     }
@@ -132,12 +132,9 @@ middle_pgsql_t::table_desc::table_desc(options_t const &options,
                                        table_sql const &ts)
 : m_create_table(build_sql(options, ts.create_table)),
   m_prepare_queries(build_sql(options, ts.prepare_queries)),
-  m_copy_target(std::make_shared<db_target_descr_t>())
+  m_copy_target(std::make_shared<db_target_descr_t>(
+      options.middle_dbschema, build_sql(options, ts.name), "id"))
 {
-    m_copy_target->name = build_sql(options, ts.name);
-    m_copy_target->schema = options.middle_dbschema;
-    m_copy_target->id = "id";
-
     if (options.with_forward_dependencies) {
         m_create_fw_dep_indexes = build_sql(options, ts.create_fw_dep_indexes);
     }
@@ -326,6 +323,10 @@ template <typename T>
 void pgsql_parse_json_tags(char const *string, osmium::memory::Buffer *buffer,
                            T *obuilder)
 {
+    if (*string == '\0') { // NULL
+        return;
+    }
+
     auto const tags = nlohmann::json::parse(string);
     if (!tags.is_object()) {
         throw std::runtime_error{"Database format for tags invalid."};
@@ -442,6 +443,10 @@ template <typename T>
 void pgsql_parse_json_members(char const *string,
                               osmium::memory::Buffer *buffer, T *obuilder)
 {
+    if (*string == '\0') { // NULL
+        return;
+    }
+
     osmium::builder::RelationMemberListBuilder builder{*buffer, obuilder};
     member_list_json_builder parser{&builder};
     nlohmann::json::sax_parse(string, &parser);
@@ -616,6 +621,10 @@ void middle_pgsql_t::copy_attributes(osmium::OSMObject const &obj)
 void middle_pgsql_t::copy_tags(osmium::OSMObject const &obj)
 {
     if (m_store_options.db_format == 2) {
+        if (obj.tags().empty()) {
+            m_db_copy.add_null_column();
+            return;
+        }
         json_writer_t writer;
         tags_to_json(obj.tags(), &writer);
         m_db_copy.add_column(writer.json());
@@ -825,48 +834,69 @@ void middle_pgsql_t::get_node_parents(
 
     send_id_list(m_db_connection, "osm2pgsql_changed_nodes", changed_nodes);
 
-    m_db_connection.exec("ANALYZE osm2pgsql_changed_nodes");
+    std::vector<std::string> queries;
+
+    queries.emplace_back("ANALYZE osm2pgsql_changed_nodes");
 
     bool const has_bucket_index =
         check_bucket_index(&m_db_connection, m_options->prefix);
 
     if (has_bucket_index) {
-        m_db_connection.exec(build_sql(*m_options, R"(
-WITH changed_buckets AS (
-  SELECT array_agg(id) AS node_ids, id >> {way_node_index_id_shift} AS bucket
-    FROM osm2pgsql_changed_nodes GROUP BY id >> {way_node_index_id_shift}
-)
-INSERT INTO osm2pgsql_changed_ways
-  SELECT DISTINCT w.id
-    FROM {schema}"{prefix}_ways" w, changed_buckets b
-    WHERE w.nodes && b.node_ids
-      AND {schema}"{prefix}_index_bucket"(w.nodes)
-       && ARRAY[b.bucket];
-        )"));
+        // The query to get the parent ways of changed nodes is "hidden"
+        // inside a PL/pgSQL function so that the query planner only sees
+        // a single node id that is being queried for. If we ask for all
+        // nodes at the same time the query planner sometimes thinks it is
+        // better to do a full table scan which totally destroys performance.
+        // This is due to the PostgreSQL statistics on ARRAYs being way off.
+        queries.emplace_back(R"(
+CREATE OR REPLACE FUNCTION osm2pgsql_find_changed_ways() RETURNS void AS $$
+DECLARE
+  changed_buckets RECORD;
+BEGIN
+  FOR changed_buckets IN
+    SELECT array_agg(id) AS node_ids, id >> {way_node_index_id_shift} AS bucket
+      FROM osm2pgsql_changed_nodes GROUP BY id >> {way_node_index_id_shift}
+  LOOP
+    INSERT INTO osm2pgsql_changed_ways
+    SELECT DISTINCT w.id
+      FROM {schema}"{prefix}_ways" w
+      WHERE w.nodes && changed_buckets.node_ids
+        AND {schema}"{prefix}_index_bucket"(w.nodes)
+         && ARRAY[changed_buckets.bucket];
+  END LOOP;
+END;
+$$ LANGUAGE plpgsql
+)");
+        queries.emplace_back("SELECT osm2pgsql_find_changed_ways()");
+        queries.emplace_back("DROP FUNCTION osm2pgsql_find_changed_ways()");
     } else {
-        m_db_connection.exec(build_sql(*m_options, R"(
+        queries.emplace_back(R"(
 INSERT INTO osm2pgsql_changed_ways
-  SELECT DISTINCT w.id
+  SELECT w.id
     FROM {schema}"{prefix}_ways" w, osm2pgsql_changed_nodes n
     WHERE w.nodes && ARRAY[n.id]
-        )"));
+        )");
     }
 
     if (m_options->middle_database_format == 1) {
-        m_db_connection.exec(build_sql(*m_options, R"(
+        queries.emplace_back(R"(
 INSERT INTO osm2pgsql_changed_relations
-  SELECT DISTINCT r.id
+  SELECT r.id
     FROM {schema}"{prefix}_rels" r, osm2pgsql_changed_nodes n
     WHERE r.parts && ARRAY[n.id]
       AND r.parts[1:way_off] && ARRAY[n.id]
-        )"));
+        )");
     } else {
-        m_db_connection.exec(build_sql(*m_options, R"(
+        queries.emplace_back(R"(
 INSERT INTO osm2pgsql_changed_relations
-  SELECT DISTINCT r.id
+  SELECT r.id
     FROM {schema}"{prefix}_rels" r, osm2pgsql_changed_nodes c
     WHERE {schema}"{prefix}_member_ids"(r.members, 'N'::char) && ARRAY[c.id];
-        )"));
+        )");
+    }
+
+    for (auto const &query : queries) {
+        m_db_connection.exec(build_sql(*m_options, query));
     }
 
     load_id_list(m_db_connection, "osm2pgsql_changed_ways", parent_ways);
@@ -1324,9 +1354,8 @@ void middle_pgsql_t::write_users_table()
 {
     log_info("Writing {} entries to table '{}'...", m_users.size(),
              m_users_table.name());
-    auto const users_table =
-        std::make_shared<db_target_descr_t>(m_users_table.name(), "id");
-    users_table->schema = m_users_table.schema();
+    auto const users_table = std::make_shared<db_target_descr_t>(
+        m_users_table.schema(), m_users_table.name(), "id");
 
     for (auto const &[id, name] : m_users) {
         m_db_copy.new_line(users_table);
@@ -1447,7 +1476,7 @@ static table_sql sql_for_nodes_format2(middle_pgsql_options const &options)
             " lat int4 NOT NULL,"
             " lon int4 NOT NULL,"
             "{attribute_columns_definition}"
-            " tags jsonb NOT NULL"
+            " tags jsonb"
             ") {data_tablespace}";
 
         sql.prepare_queries = {
@@ -1513,7 +1542,7 @@ static table_sql sql_for_ways_format2(middle_pgsql_options const &options)
                        " id int8 PRIMARY KEY {using_tablespace},"
                        "{attribute_columns_definition}"
                        " nodes int8[] NOT NULL,"
-                       " tags jsonb NOT NULL"
+                       " tags jsonb"
                        ") {data_tablespace}";
 
     sql.prepare_queries = {"PREPARE get_way(int8) AS"
@@ -1584,7 +1613,7 @@ static table_sql sql_for_relations_format2()
                        " id int8 PRIMARY KEY {using_tablespace},"
                        "{attribute_columns_definition}"
                        " members jsonb NOT NULL,"
-                       " tags jsonb NOT NULL"
+                       " tags jsonb"
                        ") {data_tablespace}";
 
     sql.prepare_queries = {"PREPARE get_rel(int8) AS"

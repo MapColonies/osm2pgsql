@@ -68,7 +68,7 @@ void output_pgsql_t::pgsql_out_way(osmium::Way const &way, taglist_t *tags,
 
         auto const wkb = geom_to_ewkb(projected_geom);
         if (!wkb.empty()) {
-            m_expire.from_geometry_if_3857(projected_geom, m_expire_config);
+            m_expire.from_geometry(projected_geom, m_expire_config);
             if (m_enable_way_area) {
                 double const area = calculate_area(
                     get_options()->reproject_area, geom, projected_geom);
@@ -83,7 +83,7 @@ void output_pgsql_t::pgsql_out_way(osmium::Way const &way, taglist_t *tags,
         auto const geoms = geom::split_multi(geom::segmentize(
             geom::transform(geom::create_linestring(way), *m_proj), split_at));
         for (auto const &sgeom : geoms) {
-            m_expire.from_geometry_if_3857(sgeom, m_expire_config);
+            m_expire.from_geometry(sgeom, m_expire_config);
             auto const wkb = geom_to_ewkb(sgeom);
             m_tables[t_line]->write_row(way.id(), *tags, wkb);
             if (roads) {
@@ -180,7 +180,7 @@ void output_pgsql_t::node_add(osmium::Node const &node)
     }
 
     auto const geom = geom::transform(geom::create_point(node), *m_proj);
-    m_expire.from_geometry_if_3857(geom, m_expire_config);
+    m_expire.from_geometry(geom, m_expire_config);
     auto const wkb = geom_to_ewkb(geom);
     m_tables[t_point]->write_row(node.id(), outtags, wkb);
 }
@@ -283,7 +283,7 @@ void output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel)
         }
         auto const geoms = geom::split_multi(std::move(projected_geom));
         for (auto const &sgeom : geoms) {
-            m_expire.from_geometry_if_3857(sgeom, m_expire_config);
+            m_expire.from_geometry(sgeom, m_expire_config);
             auto const wkb = geom_to_ewkb(sgeom);
             m_tables[t_line]->write_row(-rel.id(), outtags, wkb);
             if (roads) {
@@ -299,7 +299,7 @@ void output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel)
                               !get_options()->enable_multi);
         for (auto const &sgeom : geoms) {
             auto const projected_geom = geom::transform(sgeom, *m_proj);
-            m_expire.from_geometry_if_3857(projected_geom, m_expire_config);
+            m_expire.from_geometry(projected_geom, m_expire_config);
             auto const wkb = geom_to_ewkb(projected_geom);
             if (m_enable_way_area) {
                 double const area = calculate_area(
@@ -352,12 +352,12 @@ void output_pgsql_t::delete_from_output_and_expire(osmid_t id)
 
     for (auto table : {t_line, t_poly}) {
         if (m_expire.enabled()) {
-            auto const results = m_tables[table]->get_wkb(id);
+            auto const results = m_tables.at(table)->get_wkb(id);
             if (expire_from_result(&m_expire, results, m_expire_config) != 0) {
-                m_tables[table]->delete_row(id);
+                m_tables.at(table)->delete_row(id);
             }
         } else {
-            m_tables[table]->delete_row(id);
+            m_tables.at(table)->delete_row(id);
         }
     }
 }
@@ -485,7 +485,7 @@ output_pgsql_t::output_pgsql_t(std::shared_ptr<middle_query_t> const &mid,
             std::abort(); // should never be here
         }
 
-        m_tables[i] = std::make_unique<table_t>(
+        m_tables.at(i) = std::make_unique<table_t>(
             name, type, columns, options.hstore_columns,
             options.projection->target_srs(), options.append,
             options.hstore_mode, copy_thread, options.output_dbschema);
@@ -504,8 +504,8 @@ output_pgsql_t::output_pgsql_t(
 {
     for (std::size_t i = 0; i < m_tables.size(); ++i) {
         //copy constructor will just connect to the already there table
-        m_tables[i] =
-            std::make_unique<table_t>(*(other->m_tables[i]), copy_thread);
+        m_tables.at(i) =
+            std::make_unique<table_t>(*(other->m_tables.at(i)), copy_thread);
     }
 }
 

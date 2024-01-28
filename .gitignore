@@ -1,4 +1,5 @@
-build
+build*
+diffs*
 
 docs/html
 docs/latex

@@ -69,9 +69,8 @@ geom::point_t expire_tiles::coords_to_tile(geom::point_t const &point)
     PJ_COORD coord;
     coord.lp.lam = c.y();
     coord.lp.phi = c.x();
-    
-    auto const mercator_point = proj_trans(pj, PJ_DIRECTION::PJ_FWD ,coord);
 
+    auto const mercator_point = proj_trans(pj, PJ_DIRECTION::PJ_FWD, coord);
 
     return {m_map_width * (0.5 + mercator_point.xy.x / tile_t::earth_circumference),
             m_map_width * (0.5 - mercator_point.xy.y / tile_t::earth_circumference)};

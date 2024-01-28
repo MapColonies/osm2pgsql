@@ -50,31 +50,6 @@ struct database_options_t
 std::string build_conninfo(database_options_t const &opt);
 
 /**
- * Outputs can signal their requirements to the middle by setting these fields.
- */
-struct output_requirements
-{
-    /**
-     * Need full node objects with tags, attributes (only if --extra-attributes
-     * is set) and locations. If false, only node locations are needed.
-     */
-    bool full_nodes = false;
-
-    /**
-     * Need full way objects with tags, attributes (only if --extra-attributes
-     * is set) and way nodes. If false, only way nodes are needed.
-     */
-    bool full_ways = false;
-
-    /**
-     * Need full relation objects with tags, attributes (only if
-     * --extra-attributes is set) and members. If false, no data from relations
-     * is needed.
-     */
-    bool full_relations = false;
-};
-
-/**
  * Structure for storing command-line and other options
  */
 struct options_t
@@ -98,13 +73,16 @@ struct options_t
     /// Pg Tablespace to store slim tables (no default TABLESPACE)
     std::string tblsslim_data{};
 
+    /// Default Pg schema.
+    std::string dbschema{"public"};
+
     /// Pg schema to store middle tables in.
-    std::string middle_dbschema{"public"};
+    std::string middle_dbschema{};
 
     /// Pg schema to store output tables in.
-    std::string output_dbschema{"public"};
+    std::string output_dbschema{};
 
-    std::string style{DEFAULT_STYLE}; ///< style file to use
+    std::string style{}; ///< style file to use
 
     /// Name of the flat node file used. Empty if flat node file is not enabled.
     std::string flat_node_file{};
@@ -184,6 +162,9 @@ struct options_t
     bool parallel_indexing = true;
     bool create = false;
     bool pass_prompt = false;
+
+    bool output_backend_set = false;
+    bool style_set = false;
 }; // struct options_t
 
 #endif // OSM2PGSQL_OPTIONS_HPP

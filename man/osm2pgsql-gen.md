@@ -36,7 +36,8 @@ mandatory for short options too.
     specified.
 
 -S, \--style=FILE
-:   The Lua config file. Same as for **osm2pgsql**.
+:   The Lua config file. Same as for **osm2pgsql**. Usually not required
+    because it is read from the `osm2pgsql_properties` table.
 
 -j, \-jobs=NUM
 :   Specifies the number of parallel threads used for certain operations.
@@ -78,6 +79,16 @@ mandatory for short options too.
 
 -P, \--port=PORT
 :   Database server port.
+
+\--schema=SCHEMA
+:   Default for various schema settings throughout osm2pgsql-gen
+    (default: `public`). The schema must exist in the database and be writable
+    by the database user. It must be the same as used with `osm2pgsql`.
+
+\--middle-schema=SCHEMA
+:   Database schema where the `osm2pgsql_properties` table is to be found.
+    Default set with `--schema`. Set to the same value as on the `osm2pgsql`
+    command line.
 
 # SEE ALSO
 
