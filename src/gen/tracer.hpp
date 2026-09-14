@@ -6,18 +6,20 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
-#include "canvas.hpp"
 #include "geom.hpp"
-#include "tile.hpp"
 
 #include <potracelib.h>
 
+#include <cstddef>
 #include <memory>
 #include <vector>
+
+class canvas_t;
+class tile_t;
 
 class tracer_t
 {
@@ -37,7 +39,7 @@ public:
     std::size_t num_points() const noexcept { return m_num_points; }
 
 private:
-    static constexpr auto const bits_per_word = sizeof(potrace_word) * 8;
+    static constexpr std::size_t BITS_PER_WORD = sizeof(potrace_word) * 8;
 
     geom::point_t make_point(potrace_dpoint_t const &p) const noexcept;
 

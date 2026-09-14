@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -17,6 +17,7 @@
  */
 
 #include "format.hpp"
+#include "pgsql-params.hpp"
 
 #include <libpq-fe.h>
 
@@ -114,6 +115,13 @@ public:
         return PQfnumber(m_result.get(), ('"' + name + '"').c_str());
     }
 
+    /// Get the PostgreSQL internal type of a field.
+    unsigned int field_type(int col) const noexcept
+    {
+        assert(col >= 0 && col < num_fields());
+        return PQftype(m_result.get(), col);
+    }
+
     /// Return true if this holds an actual result.
     explicit operator bool() const noexcept { return m_result.get(); }
 
@@ -130,12 +138,12 @@ private:
  * Wrapper class for query parameters that should be sent to the database
  * as binary parameter.
  */
-class binary_param : public std::string_view
+class binary_param_t : public std::string_view
 {
 public:
     using std::string_view::string_view;
 
-    explicit binary_param(std::string const &str)
+    explicit binary_param_t(std::string const &str)
     : std::string_view(str.data(), str.size())
     {}
 };
@@ -151,7 +159,8 @@ public:
 class pg_conn_t
 {
 public:
-    explicit pg_conn_t(std::string const &conninfo);
+    explicit pg_conn_t(connection_params_t const &connection_params,
+                       std::string_view context);
 
     /**
      * Run the specified SQL command.
@@ -172,9 +181,27 @@ public:
      *         status code PGRES_COMMAND_OK or PGRES_TUPLES_OK).
      */
     template <typename... TArgs>
-    pg_result_t exec(fmt::format_string<TArgs...> sql, TArgs... params) const
+    pg_result_t exec(fmt::format_string<TArgs...> sql, TArgs &&...params) const
     {
         return exec(fmt::format(sql, std::forward<TArgs>(params)...));
+    }
+
+    /**
+     * Prepare SQL query.
+     *
+     * \param stmt Name of the prepared query.
+     * \param sql SQL query.
+     * \param params Any number of arguments for the fmt lib.
+     * \throws std::runtime_exception If the command failed (didn't return
+     *         status code PGRES_COMMAND_OK).
+     */
+    template <typename... TArgs>
+    void prepare(std::string const &stmt, fmt::format_string<TArgs...> sql,
+                 TArgs &&...params) const
+    {
+        std::string const query =
+            fmt::format(sql, std::forward<TArgs>(params)...);
+        prepare_internal(stmt, query);
     }
 
     /**
@@ -187,7 +214,7 @@ public:
      * \throws exception if the command failed.
      */
     template <typename... TArgs>
-    pg_result_t exec_prepared(char const *stmt, TArgs... params) const
+    pg_result_t exec_prepared(char const *stmt, TArgs &&...params) const
     {
         return exec_prepared_with_result_format(stmt, false,
                                                 std::forward<TArgs>(params)...);
@@ -203,7 +230,8 @@ public:
      * \throws exception if the command failed.
      */
     template <typename... TArgs>
-    pg_result_t exec_prepared_as_binary(char const *stmt, TArgs... params) const
+    pg_result_t exec_prepared_as_binary(char const *stmt,
+                                        TArgs &&...params) const
     {
         return exec_prepared_with_result_format(stmt, true,
                                                 std::forward<TArgs>(params)...);
@@ -215,7 +243,7 @@ public:
      */
     void set_config(char const *setting, char const *value) const;
 
-    void copy_start(std::string_view sql) const;
+    void copy_start(std::string const &sql) const;
     void copy_send(std::string_view data, std::string_view context) const;
     void copy_end(std::string_view context) const;
 
@@ -226,6 +254,9 @@ public:
     void close();
 
 private:
+    void prepare_internal(std::string const &stmt,
+                          std::string const &sql) const;
+
     pg_result_t exec_prepared_internal(char const *stmt, int num_params,
                                        char const *const *param_values,
                                        int *param_lengths, int *param_formats,
@@ -241,7 +272,7 @@ private:
     {
         if constexpr (std::is_same_v<T, char const *> ||
                       std::is_same_v<T, std::string> ||
-                      std::is_same_v<T, binary_param>) {
+                      std::is_same_v<T, binary_param_t>) {
             return 0;
         }
         return 1;
@@ -260,10 +291,10 @@ private:
         if constexpr (std::is_same_v<T, char const *>) {
             return param;
         } else if constexpr (std::is_same_v<T, std::string>) {
-            *length = param.size();
+            *length = static_cast<int>(param.size());
             return param.c_str();
-        } else if constexpr (std::is_same_v<T, binary_param>) {
-            *length = param.size();
+        } else if constexpr (std::is_same_v<T, binary_param_t>) {
+            *length = static_cast<int>(param.size());
             *bin = 1;
             return param.data();
         }
@@ -283,17 +314,18 @@ private:
     template <typename... TArgs>
     pg_result_t exec_prepared_with_result_format(char const *stmt,
                                                  bool result_as_binary,
-                                                 TArgs... params) const
+                                                 TArgs &&...params) const
     {
         // We have to convert all non-string parameters into strings and
         // store them somewhere. We use the exec_params vector for this.
         // It needs to be large enough to hold all parameters without resizing
         // so that pointers into the strings in that vector remain valid
         // after new parameters have been added.
-        constexpr auto const total_buffers_needed =
+        constexpr auto TOTAL_BUFFERS_NEEDED =
             (0 + ... + buffers_needed<std::decay_t<TArgs>>());
+
         std::vector<std::string> exec_params;
-        exec_params.reserve(total_buffers_needed);
+        exec_params.reserve(TOTAL_BUFFERS_NEEDED);
 
         std::array<int, sizeof...(params)> lengths = {0};
         std::array<int, sizeof...(params)> bins = {0};

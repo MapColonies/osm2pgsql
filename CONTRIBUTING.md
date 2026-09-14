@@ -1,49 +1,61 @@
-# Osm2pgsql contribution guidelines
+# osm2pgsql contribution guidelines
+
+The following section describes our work flow, coding style and give some
+hints on developer setup.
+For more information about what to contribute and an overview
+of the general roadmap, visit the [Contribution guide](https://osm2pgsql.org/contribute/)
+on the osm2pgsql website.
 
 ## Workflow
 
-We operate the "Fork & Pull" model explained at
+We operate with the
+["Fork & Pull"](https://help.github.com/articles/using-pull-requests) model
+and try to stick to a four-eyes review mode, meaning that PRs should be merged
+by a different person than the author.
 
-https://help.github.com/articles/using-pull-requests
+Here are a few simple rules you should follow with your code and pull request (PR).
+They will maximize your chances that a PR gets reviewed and merged.
 
-You should fork the project into your own repo, create a topic branch
-there and then make one or more pull requests back to the OpenStreetMap repository.
-Your pull requests will then be reviewed and discussed.
+* Split your PR into functionally sensible commits. Describe each commit with
+  a relevant commit message. If you need to do fix-up commits, please, merge
+  them into the functional commits. Interactive rebasing (`git rebase -i`) is
+  very useful for this. Then force-push to your PR branch.
+* Avoid merge commits. If you have to catch up with changes from master,
+  rather use rebasing.
+* Split up larger PRs into smaller units if possible. Never mix two different
+  topics or fixes in a single PR.
+* Decorate your PR with an informative but succinct description. Do not post
+  AI-generated PR descriptions without having reviewed (and preferably heavily
+  shortened) the text.
+* Try to follow the style of existing code as close as possible. Use
+  clang-format to follow the formal coding style (see below).
 
-## History
+> [!IMPORTANT]
+> Any use of generative AI for writing code, documentation or PR descriptions
+> must be disclosed. You must further be able to show that you have understood
+> the generated parts. Your code, your responsibility.
 
-To understand the osm2pgsql code, it helps to know some history on it. Osm2pgsql
-was written in C in 2007 as a port of an older Python utility. In 2014 it was
-ported to C++ by MapQuest and the last C version was released as 0.86.0. In it's
-time, it has had varying contribution activity, including times with no
-maintainer or active developers.
-
-Parts of the codebase still clearly show their C origin and could use rewriting
-in modern C++, making use of data structures in the standard library.
-
-## Versioning
-
-Osm2pgsql uses [semantic versioning](https://semver.org/).
-
-Bugs and known issues are fixed on the main branch only. Exceptions may be made
-for severe bugs.
-
-## Code style
+## Coding style
 
 Code must be written in the
 [K&R 1TBS style](https://en.wikipedia.org/wiki/Indent_style#Variant:_1TBS) with
 4 spaces indentation. Tabs should never be used in the C++ code. Braces must
 always be used for code blocks, even one-liners.
 
-Names should use underscores, not camel case, with class/struct names ending in `_t`.
-Template parameters must use all upper case.
+Names should use underscores, not camel case, with class/struct names ending in
+`_t`. Constants and template parameters must use all upper case.
 
-Headers should be included in the order C++ standard library headers,
-C library headers, Boost headers, and last osm2pgsql files.
+Header files should be included in the following order, each group in their own
+block:
 
-There is a .clang-format configuration available and all code must be run through
-clang-format before submitting. You can use git-clang-format after staging all
-your changes:
+* The corresponding .hpp file (in .cpp files only)
+* Other osm2pgsql header files
+* Header files from external libraries, each in their own block
+* C++/C C++ standard library header files
+
+There is a .clang-format configuration available and all code must be run
+through clang-format before submitting. You can use git-clang-format after
+staging all your changes:
 
     git-clang-format src/*pp tests/*pp
 
@@ -70,16 +82,13 @@ installed with:
 sudo apt-get install pandoc python3-argparse-manpage
 ```
 
-Results should be checked into the repository.
-
-## Platforms targeted
-
-Ideally osm2pgsql should compile on Linux, OS X, FreeBSD and Windows. It is
-actively tested on Debian, Ubuntu and FreeBSD by the maintainers.
+The manpages are rebuilt and checked into the repository as part of the
+release process.
 
 ## Testing
 
-osm2pgsql is tested with two types of tests: Classic tests written in C++ and BDD (Behavior Driven Development) tests written in Python.
+osm2pgsql is tested with two types of tests: Classic tests written in C++ and
+BDD (Behavior Driven Development) tests written in Python.
 
 ### Classic Tests
 
@@ -96,7 +105,7 @@ against it. This is most easily done using `pg_virtualenv`. Just run
 pg_virtualenv ctest
 ```
 
-`pg_virtualenv` creates a separate postgres server instance. The test databases
+`pg_virtualenv` creates a separate PostgreSQL server instance. The test databases
 are created in this instance and the complete server is destroyed after the
 tests are finished. ctest also calls appropriate fixtures that create the
 separate tablespace required for some tests.
@@ -128,54 +137,54 @@ database created by `pg_virtualenv`.
 
 Tests in the `tests/bdd` directory use [behave](https://github.com/behave/behave),
 a Python implementation of a behaviour-driven test framework. To run the
-BDD tests you need to have behave and psycopg2 installed. On Ubuntu run:
+BDD tests you need to have behave and psycopg installed. On Ubuntu run:
 
 ```sh
-sudo apt-get install python3-psycopg2 python3-behave
+sudo apt-get install python3-psycopg python3-behave
 ```
+
+The BDD tests are run through the osm2pgsql-test-style tester. See the
+[section on testing](https://osm2pgsql.org/doc/manual.html#style-testing)
+in the manual for details.
 
 There are ctest directives to run the tests. If you want to run the tests
 manually, for example to run single tests during development, you can
-switch to the bdd test directory and run behave directly from there:
+use the `run-bdd-tests` script in the build directory. It is a thin
+wrapper around osm2pgsql-test-style which properly sets up the paths
+for the osm2pgsql binary and test data paths:
 
 ```sh
-cd osm2pgsql/tests/bdd
-behave -DBINARY=<your build directory>/osm2pgsql
+cd build
+./run-bdd-tests ../tests/bdd/regression/
 ```
-
-Per default, behave assumes that the build directory is under `osm2pgsql/build`.
-If your setup works like that, you can leave out the `-D` parameter.
-
-To make this a bit easier a shell script `run-behave` is provided in your
-build directory which sets those correct paths and calls `behave`. If run
-with `-p` as first option it will wrap the call to `behave` in a call to
-`pg_virtualenv` for your convenience. All other command line parameters of
-`run-behave` will be passed through to behave.
 
 To run a single test, simply add the name of the test file, followed by a
 column and the line number of the test:
 
 ```sh
-behave flex/area.feature:71
+./run-bdd-tests ../tests/bdd/flex/area.feature:71
 ```
 
-If you need to inspect the database that a test produces, you can add
-`-DKEEP_TEST_DB` and behave won't remove the database after the test is
-finished. This makes of course only sense, when running a single test.
+You can pass any additional parameters to the script that osm2pgsql-test-style
+would take. If you need to inspect the database that a test produces, you add
+`--keep-test-db` and behave won't remove the database after the test is
+finished. This makes only sense, when running a single test.
 When running under pg_virtualenv, don't forget to keep the virtual environment
 as well. You can use the handy `-s` switch:
 
 ```sh
-pg_virtualenv -s behave -DKEEP_TEST_DB flex/area.feature:71
+pg_virtualenv -s ./run-bdd-tests ../tests/bdd/flex/area.feature:71
 ```
 
 It drops you into a shell when the behave test fails, where you can use
 psql to look at the database. Or start a shell in the virtual environment
 with `pg_virtualenv bash` and run behave from there.
 
-The BDDs automatically detect if osm2pgsql was compiled with Lua and
+The BDDs automatically detect if osm2pgsql was compiled with
 proj support and skip tests accordingly. They also check for the test
-tablespace `tablespacetest` for tests that need tablespaces.
+tablespace `tablespacetest` for tests that need tablespaces. To force
+running the proj and tablespace tests use `--test-proj yes` and
+`--test-tablespace yes` respectively.
 
 BDD tests hide print statements by default. For development purposes they
 can be shown by adding these lines to `tests/bdd/.behaverc`:
@@ -186,11 +195,6 @@ stdout_capture=False
 stderr_capture=False
 log_capture=False
 ```
-
-### Performance testing
-
-If performance testing with a full planet import is required, indicate what
-needs testing in a pull request.
 
 ## Coverage reports
 
@@ -207,14 +211,11 @@ the report.
 
 * Decide on a new version. (See [semantic versioning](https://semver.org/).)
 * Update version in [CMakeLists.txt](CMakeLists.txt), look for `project` function.
-* Build man page (`make man`) and copy it to `man/osm2pgsql.1`.
+* Update man pages
+  * Build man page: `make man`
+  * Copy to source: `cp man/*1 ../man/`
 * Tag release with release notes in commit message and upload the tag to Github.
 * Fill out release notes on Github.
 * Copy Windows binaries and source tarball to osm2pgsql.org.
 * Add release info to osm2pgsql.org.
 * Publish release notes as News article on osm2pgsql.org.
-
-## Maintainers
-
-The current maintainers of osm2pgsql are [Sarah Hoffmann](https://github.com/lonvia/)
-and [Paul Norman](https://github.com/pnorman/).

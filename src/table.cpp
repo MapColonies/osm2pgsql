@@ -3,16 +3,14 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include <algorithm>
-#include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -45,8 +43,8 @@ table_t::table_t(std::string const &name, std::string type, columns_t columns,
 
 table_t::table_t(table_t const &other,
                  std::shared_ptr<db_copy_thread_t> const &copy_thread)
-: m_conninfo(other.m_conninfo), m_target(other.m_target), m_type(other.m_type),
-  m_srid(other.m_srid), m_append(other.m_append),
+: m_connection_params(other.m_connection_params), m_target(other.m_target),
+  m_type(other.m_type), m_srid(other.m_srid), m_append(other.m_append),
   m_hstore_mode(other.m_hstore_mode), m_columns(other.m_columns),
   m_hstore_columns(other.m_hstore_columns), m_table_space(other.m_table_space),
   m_copy(copy_thread)
@@ -54,50 +52,51 @@ table_t::table_t(table_t const &other,
     // if the other table has already started, then we want to execute
     // the same stuff to get into the same state. but if it hasn't, then
     // this would be premature.
-    if (other.m_sql_conn) {
+    if (other.m_db_connection) {
         connect();
         prepare();
     }
 }
 
-void table_t::teardown() { m_sql_conn.reset(); }
+void table_t::teardown() { m_db_connection.reset(); }
 
 void table_t::sync() { m_copy.sync(); }
 
 void table_t::connect()
 {
-    m_sql_conn = std::make_unique<pg_conn_t>(m_conninfo);
-    //let commits happen faster by delaying when they actually occur
-    m_sql_conn->exec("SET synchronous_commit = off");
+    m_db_connection =
+        std::make_unique<pg_conn_t>(m_connection_params, "out.pgsql");
 }
 
-void table_t::start(std::string const &conninfo, std::string const &table_space)
+void table_t::start(connection_params_t const &connection_params,
+                    std::string const &table_space)
 {
-    if (m_sql_conn) {
+    if (m_db_connection) {
         throw fmt_error("{} cannot start, its already started.",
                         m_target->name());
     }
 
-    m_conninfo = conninfo;
+    m_connection_params = connection_params;
     m_table_space = tablespace_clause(table_space);
 
     connect();
     log_info("Setting up table '{}'", m_target->name());
-    auto const qual_name = qualified_name(m_target->schema(), m_target->name());
-    auto const qual_tmp_name =
-        qualified_name(m_target->schema(), m_target->name() + "_tmp");
 
     // we are making a new table
     if (!m_append) {
-        m_sql_conn->exec("DROP TABLE IF EXISTS {} CASCADE", qual_name);
+        drop_table_if_exists(*m_db_connection, m_target->schema(),
+                             m_target->name());
     }
 
     // These _tmp tables can be left behind if we run out of disk space.
-    m_sql_conn->exec("DROP TABLE IF EXISTS {}", qual_tmp_name);
+    drop_table_if_exists(*m_db_connection, m_target->schema(),
+                         m_target->name() + "_tmp");
 
     //making a new table
     if (!m_append) {
         //define the new table
+        auto const qual_name =
+            qualified_name(m_target->schema(), m_target->name());
         auto sql =
             fmt::format("CREATE UNLOGGED TABLE {} (osm_id int8,", qual_name);
 
@@ -129,10 +128,10 @@ void table_t::start(std::string const &conninfo, std::string const &table_space)
         sql += m_table_space;
 
         //create the table
-        m_sql_conn->exec(sql);
+        m_db_connection->exec(sql);
 
         if (m_srid != "4326") {
-            create_geom_check_trigger(m_sql_conn.get(), m_target->schema(),
+            create_geom_check_trigger(*m_db_connection, m_target->schema(),
                                       m_target->name(), "ST_IsValid(NEW.way)");
         }
     }
@@ -144,9 +143,8 @@ void table_t::prepare()
 {
     //let postgres cache this query as it will presumably happen a lot
     auto const qual_name = qualified_name(m_target->schema(), m_target->name());
-    m_sql_conn->exec("PREPARE get_wkb(int8) AS"
-                     " SELECT way FROM {} WHERE osm_id = $1",
-                     qual_name);
+    m_db_connection->prepare(
+        "get_wkb", "SELECT way FROM {} WHERE osm_id = $1::int8", qual_name);
 }
 
 void table_t::generate_copy_column_list()
@@ -188,56 +186,39 @@ void table_t::stop(bool updateable, bool enable_hstore_index,
 
     if (!m_append) {
         if (m_srid != "4326") {
-            drop_geom_check_trigger(m_sql_conn.get(), m_target->schema(),
+            drop_geom_check_trigger(*m_db_connection, m_target->schema(),
                                     m_target->name());
         }
 
         log_info("Clustering table '{}' by geometry...", m_target->name());
 
-        std::string sql = fmt::format("CREATE TABLE {} {} AS SELECT * FROM {}",
-                                      qual_tmp_name, m_table_space, qual_name);
+        std::string const sql =
+            fmt::format("CREATE TABLE {} {} AS SELECT * FROM {} ORDER BY way",
+                        qual_tmp_name, m_table_space, qual_name);
 
-        auto const postgis_version = get_postgis_version();
+        m_db_connection->exec(sql);
 
-        sql += " ORDER BY ";
-        if (postgis_version.major == 2 && postgis_version.minor < 4) {
-            log_debug("Using GeoHash for clustering table '{}'",
-                      m_target->name());
-            if (m_srid == "4326") {
-                sql += "ST_GeoHash(way,10)";
-            } else {
-                sql += "ST_GeoHash(ST_Transform(ST_Envelope(way),4326),10)";
-            }
-            sql += " COLLATE \"C\"";
-        } else {
-            log_debug("Using native order for clustering table '{}'",
-                      m_target->name());
-            // Since Postgis 2.4 the order function for geometries gives
-            // useful results.
-            sql += "way";
-        }
-
-        m_sql_conn->exec(sql);
-
-        m_sql_conn->exec("DROP TABLE {}", qual_name);
-        m_sql_conn->exec(R"(ALTER TABLE {} RENAME TO "{}")", qual_tmp_name,
-                         m_target->name());
+        m_db_connection->exec("DROP TABLE {}", qual_name);
+        m_db_connection->exec(R"(ALTER TABLE {} RENAME TO "{}")", qual_tmp_name,
+                              m_target->name());
 
         log_info("Creating geometry index on table '{}'...", m_target->name());
 
         // Use fillfactor 100 for un-updatable imports
-        m_sql_conn->exec("CREATE INDEX ON {} USING GIST (way) {} {}", qual_name,
-                         (updateable ? "" : "WITH (fillfactor = 100)"),
-                         tablespace_clause(table_space_index));
+        m_db_connection->exec("CREATE INDEX ON {} USING GIST (way) {} {}",
+                              qual_name,
+                              (updateable ? "" : "WITH (fillfactor = 100)"),
+                              tablespace_clause(table_space_index));
 
         /* slim mode needs this to be able to apply diffs */
         if (updateable) {
             log_info("Creating osm_id index on table '{}'...",
                      m_target->name());
-            m_sql_conn->exec("CREATE INDEX ON {} USING BTREE (osm_id) {}",
-                             qual_name, tablespace_clause(table_space_index));
+            m_db_connection->exec("CREATE INDEX ON {} USING BTREE (osm_id) {}",
+                                  qual_name,
+                                  tablespace_clause(table_space_index));
             if (m_srid != "4326") {
-                create_geom_check_trigger(m_sql_conn.get(), m_target->schema(),
+                create_geom_check_trigger(*m_db_connection, m_target->schema(),
                                           m_target->name(),
                                           "ST_IsValid(NEW.way)");
             }
@@ -248,18 +229,18 @@ void table_t::stop(bool updateable, bool enable_hstore_index,
             log_info("Creating hstore indexes on table '{}'...",
                      m_target->name());
             if (m_hstore_mode != hstore_column::none) {
-                m_sql_conn->exec("CREATE INDEX ON {} USING GIN (tags) {}",
-                                 qual_name,
-                                 tablespace_clause(table_space_index));
+                m_db_connection->exec("CREATE INDEX ON {} USING GIN (tags) {}",
+                                      qual_name,
+                                      tablespace_clause(table_space_index));
             }
             for (auto const &hcolumn : m_hstore_columns) {
-                m_sql_conn->exec(R"(CREATE INDEX ON {} USING GIN ("{}") {})",
-                                 qual_name, hcolumn,
-                                 tablespace_clause(table_space_index));
+                m_db_connection->exec(
+                    R"(CREATE INDEX ON {} USING GIN ("{}") {})", qual_name,
+                    hcolumn, tablespace_clause(table_space_index));
             }
         }
         log_info("Analyzing table '{}'...", m_target->name());
-        analyze_table(*m_sql_conn, m_target->schema(), m_target->name());
+        analyze_table(*m_db_connection, m_target->schema(), m_target->name());
     }
     teardown();
 }
@@ -374,11 +355,14 @@ void table_t::task_wait()
              util::human_readable_duration(run_time));
 }
 
+// NOLINTBEGIN(google-runtime-int,cert-err34-c)
+// This is legacy code which will be removed anyway.
+
 /* Escape data appropriate to the type */
-void table_t::escape_type(std::string const &value, ColumnType flags)
+void table_t::escape_type(std::string const &value, column_type_t flags)
 {
     switch (flags) {
-    case ColumnType::INT: {
+    case column_type_t::INT: {
         // For integers we take the first number, or the average if it's a-b
         long long from = 0;
         long long to = 0;
@@ -403,7 +387,7 @@ void table_t::escape_type(std::string const &value, ColumnType flags)
         }
         break;
     }
-    case ColumnType::REAL:
+    case column_type_t::REAL:
         /* try to "repair" real values as follows:
          * assume "," to be a decimal mark which need to be replaced by "."
          * like int4 take the first number, or the average if it's a-b
@@ -437,14 +421,14 @@ void table_t::escape_type(std::string const &value, ColumnType flags)
             }
             break;
         }
-    case ColumnType::TEXT:
+    case column_type_t::TEXT:
         m_copy.add_column(value);
         break;
     }
 }
+// NOLINTEND(google-runtime-int,cert-err34-c)
 
 pg_result_t table_t::get_wkb(osmid_t id)
 {
-    return m_sql_conn->exec_prepared_as_binary("get_wkb", id);
+    return m_db_connection->exec_prepared_as_binary("get_wkb", id);
 }
-

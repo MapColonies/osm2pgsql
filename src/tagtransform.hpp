@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -16,14 +16,14 @@
 
 #include "osmtypes.hpp"
 
-class export_list;
+class export_list_t;
 struct options_t;
 
 class tagtransform_t
 {
 public:
     static std::unique_ptr<tagtransform_t>
-    make_tagtransform(options_t const *options, export_list const &exlist);
+    make_tagtransform(options_t const *options, export_list_t const &exlist);
 
     tagtransform_t() noexcept = default;
 

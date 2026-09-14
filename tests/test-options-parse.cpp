@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,14 +12,15 @@
 #include <vector>
 
 #include "command-line-parser.hpp"
-#include "taginfo-impl.hpp"
 #include "tagtransform.hpp"
 
-static char const *const TEST_PBF = "foo.pbf";
+namespace {
 
-static void bad_opt(std::vector<char const *> opts, char const *msg)
+char const *const TEST_PBF = "foo.pbf";
+
+void bad_opt(std::vector<char const *> opts, char const *msg)
 {
-    opts.insert(opts.begin(), "osm2pgsql");
+    opts.insert(opts.cbegin(), "osm2pgsql");
     opts.push_back(TEST_PBF);
 
     REQUIRE_THROWS_WITH(
@@ -27,17 +28,19 @@ static void bad_opt(std::vector<char const *> opts, char const *msg)
         Catch::Matchers::Contains(msg));
 }
 
-static options_t opt(std::vector<char const *> opts)
+options_t opt(std::vector<char const *> opts)
 {
-    opts.insert(opts.begin(), "osm2pgsql");
+    opts.insert(opts.cbegin(), "osm2pgsql");
     opts.push_back(TEST_PBF);
 
     return parse_command_line((int)opts.size(), (char **)opts.data());
 }
 
+} // anonymous namespace
+
 TEST_CASE("Insufficient arguments", "[NoDB]")
 {
-    std::vector<char const *> opts = {"osm2pgsql", "-a", "-c", "--slim"};
+    std::vector<char const *> opts = {"osm2pgsql", "-c", "--slim"};
 
     REQUIRE_THROWS_WITH(
         parse_command_line((int)opts.size(), (char **)opts.data()),
@@ -48,9 +51,7 @@ TEST_CASE("Incompatible arguments", "[NoDB]")
 {
     bad_opt({"-a", "-c", "--slim"}, "options can not be used at the same time");
 
-    bad_opt({"--drop"}, "drop only makes sense with");
-
-    bad_opt({"-j", "-k"}, "You can not specify both");
+    bad_opt({"-j", "-k"}, "--hstore excludes --hstore-all");
 
     bad_opt({"-a"}, "--append can only be used with slim mode");
 }
@@ -66,12 +67,8 @@ TEST_CASE("Middle selection", "[NoDB]")
 
 TEST_CASE("Lua styles", "[NoDB]")
 {
-#ifdef HAVE_LUA
-    auto options = opt({"--tag-transform-script", "non_existing.lua"});
-    export_list const exlist;
-    REQUIRE_THROWS_WITH(tagtransform_t::make_tagtransform(&options, exlist),
-                        Catch::Matchers::Contains("No such file or directory"));
-#endif
+    REQUIRE_THROWS_WITH(opt({"--tag-transform-script", "non_existing.lua"}),
+                        Catch::Matchers::Contains("File does not exist"));
 }
 
 TEST_CASE("Parsing bbox", "[NoDB]")
@@ -95,6 +92,24 @@ TEST_CASE("Parsing bbox fails if wrong format", "[NoDB]")
 {
     bad_opt({"-b", "123"}, "Bounding box must be specified like:"
                            " minlon,minlat,maxlon,maxlat.");
+
+    bad_opt({"-b", "1,2,3,4x"}, "Bounding box must be specified like:"
+                                " minlon,minlat,maxlon,maxlat.");
+
+    bad_opt({"-b", "1,,3,4"}, "Bounding box must be specified like:"
+                              " minlon,minlat,maxlon,maxlat.");
+
+    bad_opt({"-b", "1,2,3"}, "Bounding box must be specified like:"
+                             " minlon,minlat,maxlon,maxlat.");
+
+    bad_opt({"-b", "1,2,3,4,5"}, "Bounding box must be specified like:"
+                                 " minlon,minlat,maxlon,maxlat.");
+
+    bad_opt({"-b", "1,2,INF,4"}, "Bounding box must be specified like:"
+                                 " minlon,minlat,maxlon,maxlat.");
+
+    bad_opt({"-b", "1,NAN,3,4"}, "Bounding box must be specified like:"
+                                 " minlon,minlat,maxlon,maxlat.");
 }
 
 TEST_CASE("Parsing number-processes", "[NoDB]")
@@ -180,7 +195,7 @@ TEST_CASE("Parsing log-level", "[NoDB]")
 
 TEST_CASE("Parsing log-level fails for unknown level", "[NoDB]")
 {
-    bad_opt({"--log-level", "foo"}, "Unknown value for --log-level option: ");
+    bad_opt({"--log-level", "foo"}, "--log-level: foo not in");
 }
 
 TEST_CASE("Parsing log-progress", "[NoDB]")
@@ -194,20 +209,4 @@ TEST_CASE("Parsing log-progress fails for unknown value", "[NoDB]")
 {
     bad_opt({"--log-progress", "foo"},
             "Unknown value for --log-progress option: ");
-}
-
-TEST_CASE("Parsing with-forward-dependencies", "[NoDB]")
-{
-    auto const opt1 = opt({"--with-forward-dependencies", "true"});
-    CHECK(opt1.with_forward_dependencies);
-
-    auto const opt2 = opt({"--with-forward-dependencies", "false"});
-    CHECK_FALSE(opt2.with_forward_dependencies);
-}
-
-TEST_CASE("Parsing with-forward-dependencies fails for unknown value", "[NoDB]")
-{
-    bad_opt({"--with-forward-dependencies", "foo"},
-            "Unknown value for"
-            " --with-forward-dependencies option: ");
 }

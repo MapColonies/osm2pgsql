@@ -3,12 +3,14 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "debug-output.hpp"
 
+#include "expire-output.hpp"
+#include "flex-table.hpp"
 #include "logging.hpp"
 
 void write_expire_output_list_to_debug_log(
@@ -48,7 +50,7 @@ void write_table_list_to_debug_log(std::vector<flex_table_t> const &tables)
     for (auto const &table : tables) {
         log_debug("- Table {}", qualified_name(table.schema(), table.name()));
         log_debug("  - columns:");
-        for (auto const &column : table) {
+        for (auto const &column : table.columns()) {
             log_debug(R"(    - "{}" {} ({}) not_null={} create_only={})",
                       column.name(), column.type_name(), column.sql_type_name(),
                       column.not_null(), column.create_only());
@@ -59,8 +61,14 @@ void write_table_list_to_debug_log(std::vector<flex_table_t> const &tables)
         log_debug("  - data_tablespace={}", table.data_tablespace());
         log_debug("  - index_tablespace={}", table.index_tablespace());
         log_debug("  - cluster={}", table.cluster_by_geom());
+        log_debug("  - id_cache={}", table.with_id_cache());
         for (auto const &index : table.indexes()) {
             log_debug("  - INDEX USING {}", index.method());
+            if (index.name().empty()) {
+                log_debug("    - name=(default name)");
+            } else {
+                log_debug("    - name={}", index.name());
+            }
             log_debug("    - column={}", index.columns());
             log_debug("    - expression={}", index.expression());
             log_debug("    - include={}", index.include_columns());

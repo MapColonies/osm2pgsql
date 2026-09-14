@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -14,7 +14,6 @@
 #include "options.hpp"
 #include "taginfo-impl.hpp"
 #include "tagtransform-c.hpp"
-#include "util.hpp"
 #include "wildcmp.hpp"
 
 namespace {
@@ -26,7 +25,7 @@ struct layers_type
     bool roads;
 };
 
-constexpr std::array<layers_type, 25> const layers = {
+constexpr std::array<layers_type, 25> LAYERS = {
     {{"proposed", 1, false},       {"construction", 2, false},
      {"steps", 10, false},         {"cycleway", 10, false},
      {"bridleway", 10, false},     {"footway", 10, false},
@@ -44,9 +43,7 @@ constexpr std::array<layers_type, 25> const layers = {
      {"primary", 37, true},        {"trunk", 38, true},
      {"motorway", 39, true}}};
 
-} // anonymous namespace
-
-static void add_z_order(taglist_t *tags, bool *roads)
+void add_z_order(taglist_t *tags, bool *roads)
 {
     std::string const *const layer = tags->get("layer");
     std::string const *const highway = tags->get("highway");
@@ -62,7 +59,7 @@ static void add_z_order(taglist_t *tags, bool *roads)
     *roads = false;
 
     if (highway) {
-        for (auto const &layer : layers) {
+        for (auto const &layer : LAYERS) {
             if (*highway == layer.highway) {
                 z_order += layer.offset;
                 *roads = layer.roads;
@@ -91,18 +88,21 @@ static void add_z_order(taglist_t *tags, bool *roads)
     tags->add_tag("z_order", fmt::to_string(z_order));
 }
 
-c_tagtransform_t::c_tagtransform_t(options_t const *options, export_list exlist)
+bool starts_with(char const *input, std::string const &test) noexcept
+{
+    return std::strncmp(input, test.c_str(), test.size()) == 0;
+}
+
+} // anonymous namespace
+
+c_tagtransform_t::c_tagtransform_t(options_t const *options,
+                                   export_list_t exlist)
 : m_options(options), m_export_list(std::move(exlist))
 {}
 
 std::unique_ptr<tagtransform_t> c_tagtransform_t::clone() const
 {
     return std::make_unique<c_tagtransform_t>(m_options, m_export_list);
-}
-
-static bool starts_with(char const *input, std::string const& test) noexcept
-{
-    return std::strncmp(input, test.c_str(), test.size()) == 0;
 }
 
 bool c_tagtransform_t::check_key(std::vector<taginfo> const &infos,
@@ -112,7 +112,7 @@ bool c_tagtransform_t::check_key(std::vector<taginfo> const &infos,
     //go through the actual tags found on the item and keep the ones in the export list
     for (auto const &info : infos) {
         if (info.flags & FLAG_DELETE) {
-            if (wildMatch(info.name.c_str(), k)) {
+            if (wild_match(info.name.c_str(), k)) {
                 return false;
             }
         } else if (std::strcmp(info.name.c_str(), k) == 0) {
@@ -220,10 +220,12 @@ bool c_tagtransform_t::filter_tags(osmium::OSMObject const &o, bool *polygon,
     return filter;
 }
 
-bool c_tagtransform_t::filter_rel_member_tags(
-    taglist_t const &rel_tags, osmium::memory::Buffer const &,
-    rolelist_t const &, bool *make_boundary, bool *make_polygon, bool *roads,
-    taglist_t *out_tags)
+bool c_tagtransform_t::filter_rel_member_tags(taglist_t const &rel_tags,
+                                              osmium::memory::Buffer const &,
+                                              rolelist_t const &,
+                                              bool *make_boundary,
+                                              bool *make_polygon, bool *roads,
+                                              taglist_t *out_tags)
 {
     std::string const *type = rel_tags.get("type");
     if (!type) {

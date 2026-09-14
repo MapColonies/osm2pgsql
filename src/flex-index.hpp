@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -47,6 +47,10 @@ public:
     {
         m_include_columns = columns;
     }
+
+    std::string const &name() const noexcept { return m_name; }
+
+    void set_name(std::string name) { m_name = std::move(name); }
 
     std::string const &expression() const noexcept { return m_expression; }
 
@@ -89,6 +93,7 @@ public:
 private:
     std::vector<std::string> m_columns;
     std::vector<std::string> m_include_columns;
+    std::string m_name;
     std::string m_method;
     std::string m_expression;
     std::string m_tablespace;

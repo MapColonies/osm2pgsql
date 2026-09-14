@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -15,7 +15,7 @@
  * in the future.
  */
 
-#include "canvas.hpp"
+#include "command-line-app.hpp"
 #include "debug-output.hpp"
 #include "expire-output.hpp"
 #include "flex-lua-expire-output.hpp"
@@ -29,7 +29,6 @@
 #include "lua-init.hpp"
 #include "lua-setup.hpp"
 #include "lua-utils.hpp"
-#include "options.hpp"
 #include "params.hpp"
 #include "pgsql-capabilities.hpp"
 #include "pgsql.hpp"
@@ -43,20 +42,21 @@
 
 #include <lua.hpp>
 
+#include <potracelib.h>
+
+#include <opencv2/core/version.hpp>
+
 #include <algorithm>
-#include <array>
-#include <cassert>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
-#include <getopt.h>
-#include <limits>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
-
-constexpr std::size_t const max_force_single_thread = 4;
+#include <vector>
 
 // Lua can't call functions on C++ objects directly. This macro defines simple
 // C "trampoline" functions which are called from Lua which get the current
@@ -64,7 +64,7 @@ constexpr std::size_t const max_force_single_thread = 4;
 // context object.
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
 #define TRAMPOLINE(func_name, lua_name)                                        \
-    static int lua_trampoline_##func_name(lua_State *lua_state)                \
+    int lua_trampoline_##func_name(lua_State *lua_state)                       \
     {                                                                          \
         try {                                                                  \
             return static_cast<genproc_t *>(luaX_get_context(lua_state))       \
@@ -78,58 +78,9 @@ constexpr std::size_t const max_force_single_thread = 4;
         }                                                                      \
     }
 
-static void show_help()
-{
-    fmt::print(R"(osm2pgsql-gen [OPTIONS]
-Generalization of OSM data.
+namespace {
 
-This program is EXPERIMENTAL and might change without notice.
-
-Main Options:
-    -a|--append           Run in append mode
-    -c|--create           Run in create mode (default)
-    -S|--style=FILE       The Lua config file (same as for osm2pgsql)
-    -j|--jobs=NUM         Number of parallel jobs (default 1, max 256)
-       --middle-schema=SCHEMA  Database schema for middle tables (default set with --schema)
-       --schema=SCHEMA    Default database schema (default: 'public')
-
-Help/Version Options:
-    -h|--help             Print this help text and stop
-    -V|--version          Show version
-
-Logging options:
-    -l|--log-level=LEVEL  Log level (debug, info (default), warn, error)
-       --log-sql          Log SQL commands
-
-Database options:
-    -d|--database=DB    The name of the PostgreSQL database to connect to or
-                        a PostgreSQL conninfo string.
-    -U|--username=NAME  PostgreSQL user name.
-    -W|--password       Force password prompt.
-    -H|--host=HOST      Database server host name or socket location.
-    -P|--port=PORT      Database server port.
-)");
-}
-
-static char const *const short_options = "acd:hH:j:l:P:S:U:VW";
-
-static std::array<option, 20> const long_options = {
-    {{"help", no_argument, nullptr, 'h'},
-     {"version", no_argument, nullptr, 'V'},
-     {"append", no_argument, nullptr, 'a'},
-     {"create", no_argument, nullptr, 'c'},
-     {"jobs", required_argument, nullptr, 'j'},
-     {"database", required_argument, nullptr, 'd'},
-     {"user", required_argument, nullptr, 'U'},
-     {"host", required_argument, nullptr, 'H'},
-     {"port", required_argument, nullptr, 'P'},
-     {"password", no_argument, nullptr, 'W'},
-     {"log-level", required_argument, nullptr, 'l'},
-     {"style", required_argument, nullptr, 'S'},
-     {"log-sql", no_argument, nullptr, 201},
-     {"middle-schema", required_argument, nullptr, 202},
-     {"schema", required_argument, nullptr, 203},
-     {nullptr, 0, nullptr, 0}}};
+constexpr std::size_t MAX_FORCE_SINGLE_THREAD = 4;
 
 struct tile_extent
 {
@@ -140,27 +91,38 @@ struct tile_extent
     bool valid = false;
 };
 
-static bool table_is_empty(pg_conn_t const &db_connection,
-                           std::string const &schema, std::string const &table)
+bool table_is_empty(pg_conn_t const &db_connection, std::string const &schema,
+                    std::string const &table)
 {
     auto const result = db_connection.exec("SELECT 1 FROM {} LIMIT 1",
                                            qualified_name(schema, table));
     return result.num_tuples() == 0;
 }
 
-static tile_extent get_extent_from_db(pg_conn_t const &db_connection,
-                                      std::string const &schema,
-                                      std::string const &table,
-                                      std::string const &column, uint32_t zoom)
+tile_extent get_extent_from_db(pg_conn_t const &db_connection,
+                               std::string const &schema,
+                               std::string const &table,
+                               std::string const &column, bool raster,
+                               uint32_t zoom)
 {
     if (table_is_empty(db_connection, schema, table)) {
         return {};
     }
 
-    auto const result = db_connection.exec(
-        "SELECT ST_XMin(e), ST_YMin(e), ST_XMax(e), ST_YMax(e)"
-        " FROM ST_EstimatedExtent('{}', '{}', '{}') AS e",
-        schema, table, column);
+    pg_result_t result;
+    if (raster) {
+        result = db_connection.exec(
+            "SELECT ST_XMin(extent), ST_YMin(extent),"
+            " ST_XMax(extent), ST_YMax(extent)"
+            " FROM raster_columns WHERE r_table_schema='{}'"
+            " AND r_table_name='{}' AND r_raster_column = '{}'",
+            schema, table, column);
+    } else {
+        result = db_connection.exec(
+            "SELECT ST_XMin(e), ST_YMin(e), ST_XMax(e), ST_YMax(e)"
+            " FROM ST_EstimatedExtent('{}', '{}', '{}') AS e",
+            schema, table, column);
+    }
 
     if (result.num_tuples() == 0 || result.is_null(0, 0)) {
         return {};
@@ -179,11 +141,12 @@ static tile_extent get_extent_from_db(pg_conn_t const &db_connection,
             osmium::geom::mercy_to_tiley(zoom, extent_ymin), true};
 }
 
-static tile_extent get_extent_from_db(pg_conn_t const &db_connection,
-                                      std::string const &default_schema,
-                                      params_t const &params, uint32_t zoom)
+tile_extent get_extent_from_db(pg_conn_t const &db_connection,
+                               std::string const &default_schema,
+                               params_t const &params, uint32_t zoom)
 {
     auto const schema = params.get_string("schema", default_schema);
+
     std::string table;
     if (params.has("src_table")) {
         table = params.get_string("src_table");
@@ -196,17 +159,42 @@ static tile_extent get_extent_from_db(pg_conn_t const &db_connection,
     } else {
         throw std::runtime_error{"Need 'src_table' or 'src_tables' param."};
     }
+
     auto const geom_column = params.get_string("geom_column", "geom");
-    return get_extent_from_db(db_connection, schema, table, geom_column, zoom);
+    auto const raster_column = params.get_string("raster_column", "");
+
+    bool const is_raster = !raster_column.empty();
+
+    return get_extent_from_db(db_connection, schema, table,
+                              is_raster ? raster_column : geom_column,
+                              is_raster, zoom);
 }
 
-static void
-get_tiles_from_table(pg_conn_t const &connection, std::string const &table,
-                     uint32_t zoom,
-                     std::vector<std::pair<uint32_t, uint32_t>> *tiles)
+void get_tiles_from_table(pg_conn_t const &connection, std::string const &table,
+                          uint32_t zoom, int64_t max_tiles_per_run,
+                          std::vector<std::pair<uint32_t, uint32_t>> *tiles)
 {
-    auto const result = connection.exec(
-        R"(SELECT x, y FROM "{}" WHERE zoom = {})", table, zoom);
+    std::string query;
+    if (max_tiles_per_run == 0) {
+        query = fmt::format(
+            R"(DELETE FROM "{}" WHERE zoom = {} RETURNING x, y)", table, zoom);
+    } else {
+        query = fmt::format(R"(
+WITH to_delete AS (
+  SELECT t.ctid FROM "{0}" AS t
+    WHERE zoom = {1}
+    ORDER BY first
+    FOR UPDATE
+    LIMIT {2}
+)
+DELETE FROM "{0}" AS et
+  USING to_delete AS del
+  WHERE et.ctid = del.ctid
+  RETURNING x, y;)",
+                            table, zoom, max_tiles_per_run);
+    }
+
+    auto const result = connection.exec(query);
 
     tiles->reserve(result.num_tuples());
 
@@ -247,56 +235,60 @@ private:
     std::size_t m_num_tiles;
 };
 
-void run_tile_gen(std::string const &conninfo, gen_base_t *master_generalizer,
-                  params_t params, uint32_t zoom,
+void run_tile_gen(std::atomic_flag *error_flag,
+                  connection_params_t const &connection_params,
+                  gen_base_t *master_generalizer, params_t params,
+                  uint32_t zoom,
                   std::vector<std::pair<uint32_t, uint32_t>> *queue,
                   std::mutex *mut, unsigned int n)
 {
-    logger::init_thread(n);
+    try {
+        logger_t::init_thread(n);
 
-    log_debug("Started generalizer thread for '{}'.",
-              master_generalizer->strategy());
-    pg_conn_t db_connection{conninfo};
-    std::string const strategy{master_generalizer->strategy()};
-    auto generalizer = create_generalizer(strategy, &db_connection, &params);
+        log_debug("Started generalizer thread for '{}'.",
+                  master_generalizer->strategy());
+        pg_conn_t db_connection{connection_params, "gen.tile"};
+        std::string const strategy{master_generalizer->strategy()};
+        auto generalizer =
+            create_generalizer(strategy, &db_connection,
+                               master_generalizer->append_mode(), &params);
 
-    while (true) {
-        std::pair<uint32_t, uint32_t> p;
-        {
-            std::lock_guard<std::mutex> const guard{*mut};
-            if (queue->empty()) {
-                master_generalizer->merge_timers(*generalizer);
-                break;
+        while (true) {
+            std::pair<uint32_t, uint32_t> p;
+            {
+                std::lock_guard<std::mutex> const guard{*mut};
+                if (queue->empty()) {
+                    master_generalizer->merge_timers(*generalizer);
+                    break;
+                }
+                p = queue->back();
+                queue->pop_back();
             }
-            p = queue->back();
-            queue->pop_back();
-        }
 
-        tile_t tile{zoom, p.first, p.second};
-        log_debug("Processing tile {}/{}/{}...", tile.zoom(), tile.x(),
-                  tile.y());
-        generalizer->process(tile);
+            tile_t const tile{zoom, p.first, p.second};
+            log_debug("Processing tile {}/{}/{}...", tile.zoom(), tile.x(),
+                      tile.y());
+            generalizer->process(tile);
+        }
+        log_debug("Shutting down generalizer thread.");
+    } catch (std::exception const &e) {
+        log_error("{}", e.what());
+        error_flag->test_and_set();
+    } catch (...) {
+        log_error("Unknown exception in generalizer thread.");
+        error_flag->test_and_set();
     }
-    log_debug("Shutting down generalizer thread.");
 }
 
 class genproc_t
 {
 public:
-    genproc_t(std::string const &filename, std::string conninfo,
-              std::string dbschema, bool append, bool updatable,
-              uint32_t jobs);
+    genproc_t(std::string const &filename,
+              connection_params_t connection_params, std::string dbschema,
+              bool append, bool updatable, uint32_t jobs);
 
     int app_define_table()
     {
-#if 0
-        if (m_calling_context != calling_context::main) {
-            throw std::runtime_error{
-                "Database tables have to be defined in the"
-                " main Lua code, not in any of the callbacks."};
-        }
-#endif
-
         return setup_flex_table(m_lua_state.get(), &m_tables, &m_expire_outputs,
                                 m_dbschema, true, m_append);
     }
@@ -330,18 +322,14 @@ public:
             params.set("schema", m_dbschema);
         }
 
-        if (m_append) {
-            params.set("delete_existing", true);
-        }
-
         write_to_debug_log(params, "Params (config):");
 
         log_debug("Connecting to database...");
-        pg_conn_t db_connection{m_conninfo};
+        pg_conn_t db_connection{m_connection_params, "gen.proc"};
 
         log_debug("Creating generalizer...");
         auto generalizer =
-            create_generalizer(strategy, &db_connection, &params);
+            create_generalizer(strategy, &db_connection, m_append, &params);
 
         log_info("Running generalizer '{}' ({})...", generalizer->name(),
                  generalizer->strategy());
@@ -362,10 +350,9 @@ public:
 
         log_debug("Timers:");
         for (auto const &timer : generalizer->timers()) {
-            log_debug(fmt::format(
-                "  {:10} {:>10L}", timer.name() + ":",
-                std::chrono::duration_cast<std::chrono::milliseconds>(
-                    timer.elapsed())));
+            log_debug("  {:10} {:>10L}", timer.name() + ":",
+                      std::chrono::duration_cast<std::chrono::milliseconds>(
+                          timer.elapsed()));
         }
         log_info("Finished generalizer '{}' in {}.", generalizer->name(),
                  util::human_readable_duration(timer_gen.stop()));
@@ -419,7 +406,7 @@ public:
             queries.emplace_back("COMMIT");
         }
 
-        pg_conn_t const db_connection{m_conninfo};
+        pg_conn_t const db_connection{m_connection_params, "gen.sql"};
 
         if (m_append && !if_has_rows.empty()) {
             auto const result = db_connection.exec(if_has_rows);
@@ -505,11 +492,12 @@ private:
         std::vector<std::pair<uint32_t, uint32_t>> tile_list;
         if (m_append) {
             auto const table = params.get_string("expire_list");
+            auto const max_tiles_per_run =
+                params.get_int64("max_tiles_per_run", 0);
             log_debug("Running generalizer for expire list from table '{}'...",
                       table);
-            get_tiles_from_table(db_connection, table, zoom, &tile_list);
-            log_debug("Truncating table '{}'...", table);
-            db_connection.exec("TRUNCATE {}", table);
+            get_tiles_from_table(db_connection, table, zoom, max_tiles_per_run,
+                                 &tile_list);
         } else {
             auto const extent =
                 get_extent_from_db(db_connection, m_dbschema, params, zoom);
@@ -532,7 +520,7 @@ private:
             }
         }
         log_debug("Need to process {} tiles.", tile_list.size());
-        if (m_jobs == 1 || tile_list.size() < max_force_single_thread) {
+        if (m_jobs == 1 || tile_list.size() < MAX_FORCE_SINGLE_THREAD) {
             log_debug("Running in single-threaded mode.");
             tile_processor_t tp{generalizer, tile_list.size()};
             while (!tile_list.empty()) {
@@ -544,14 +532,20 @@ private:
             log_debug("Running in multi-threaded mode.");
             std::mutex mut;
             std::vector<std::thread> threads;
+            std::atomic_flag error_flag = ATOMIC_FLAG_INIT;
             for (unsigned int n = 1;
                  n <= std::min(m_jobs, static_cast<uint32_t>(tile_list.size()));
                  ++n) {
-                threads.emplace_back(run_tile_gen, m_conninfo, generalizer,
-                                     params, zoom, &tile_list, &mut, n);
+                threads.emplace_back(run_tile_gen, &error_flag,
+                                     m_connection_params, generalizer, params,
+                                     zoom, &tile_list, &mut, n);
             }
-            for (auto &t : threads) {
-                t.join();
+            for (auto &thread : threads) {
+                thread.join();
+            }
+            if (error_flag.test_and_set()) {
+                throw std::runtime_error{
+                    "Error in generalizer thread. Stopping."};
             }
         }
     }
@@ -564,7 +558,7 @@ private:
     std::vector<flex_table_t> m_tables;
     std::vector<expire_output_t> m_expire_outputs;
 
-    std::string m_conninfo;
+    connection_params_t m_connection_params;
     std::string m_dbschema;
     uint32_t m_jobs;
     bool m_append;
@@ -576,11 +570,13 @@ TRAMPOLINE(app_define_expire_output, define_expire_output)
 TRAMPOLINE(app_run_gen, run_gen)
 TRAMPOLINE(app_run_sql, run_sql)
 
-genproc_t::genproc_t(std::string const &filename, std::string conninfo,
+genproc_t::genproc_t(std::string const &filename,
+                     connection_params_t connection_params,
                      std::string dbschema, bool append, bool updatable,
                      uint32_t jobs)
-: m_conninfo(std::move(conninfo)), m_dbschema(std::move(dbschema)),
-  m_jobs(jobs), m_append(append), m_updatable(updatable)
+: m_connection_params(std::move(connection_params)),
+  m_dbschema(std::move(dbschema)), m_jobs(jobs), m_append(append),
+  m_updatable(updatable)
 {
     setup_lua_environment(lua_state(), filename, append);
 
@@ -593,7 +589,7 @@ genproc_t::genproc_t(std::string const &filename, std::string conninfo,
     luaX_add_table_func(lua_state(), "run_sql", lua_trampoline_app_run_sql);
 
     lua_getglobal(lua_state(), "osm2pgsql");
-    if (luaL_newmetatable(lua_state(), osm2pgsql_expire_output_name) != 1) {
+    if (luaL_newmetatable(lua_state(), OSM2PGSQL_EXPIRE_OUTPUT_CLASS) != 1) {
         throw std::runtime_error{"Internal error: Lua newmetatable failed."};
     }
     lua_pushvalue(lua_state(), -1); // Copy of new metatable
@@ -640,7 +636,7 @@ void genproc_t::run()
     }
 
     if (!m_append) {
-        pg_conn_t const db_connection{m_conninfo};
+        pg_conn_t const db_connection{m_connection_params, "gen.index"};
         for (auto const &table : m_tables) {
             if (table.id_type() == flex_table_index_type::tile &&
                 (table.always_build_id_index() || m_updatable)) {
@@ -656,109 +652,88 @@ void genproc_t::run()
     }
 }
 
+} // anonymous namespace
+
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char *argv[])
 {
     try {
-        database_options_t database_options;
         std::string dbschema{"public"};
-        std::string middle_dbschema{};
-        std::string log_level;
+        std::string middle_dbschema;
         std::string style;
         uint32_t jobs = 1;
-        bool pass_prompt = false;
         bool append = false;
 
-        int c = 0;
-        // NOLINTNEXTLINE(concurrency-mt-unsafe)
-        while (-1 != (c = getopt_long(argc, argv, short_options,
-                                      long_options.data(), nullptr))) {
-            switch (c) {
-            case 'h': // --help
-                show_help();
-                return 0;
-            case 'a': // --append
-                append = true;
-                break;
-            case 'c': // --create
-                append = false;
-                break;
-            case 'j': // --jobs
-                jobs =
-                    std::clamp(std::strtoul(optarg, nullptr, 10), 1UL, 256UL);
-                break;
-            case 'd': // --database
-                database_options.db = optarg;
-                break;
-            case 'U': // --username
-                database_options.username = optarg;
-                break;
-            case 'W': // --password
-                pass_prompt = true;
-                break;
-            case 'H': // --host
-                database_options.host = optarg;
-                break;
-            case 'P': // --port
-                database_options.port = optarg;
-                break;
-            case 'l': // --log-level
-                log_level = optarg;
-                break;
-            case 'S': // --style
-                style = optarg;
-                break;
-            case 'V': // --version
-                log_info("osm2pgsql-gen version {}", get_osm2pgsql_version());
-                return 0;
-            case 201: // --log-sql
-                get_logger().enable_sql();
-                break;
-            case 202: // --middle-schema
-                middle_dbschema = optarg;
-                if (middle_dbschema.empty()) {
-                    log_error("Schema must not be empty");
-                    return 2;
-                }
-                check_identifier(middle_dbschema, "--middle-schema");
-                break;
-            case 203: // --schema
-                dbschema = optarg;
-                if (dbschema.empty()) {
-                    log_error("Schema must not be empty");
-                    return 2;
-                }
-                check_identifier(dbschema, "--schema");
-                break;
-            default:
-                log_error("Unknown argument");
-                return 2;
-            }
+        command_line_app_t app{
+            "osm2pgsql-gen -- Generalize OpenStreetMap data\n"};
+        app.init_database_options();
+        app.init_logging_options(true, true);
+
+        // ------------------------------------------------------------------
+        // Main options
+        // ------------------------------------------------------------------
+
+        app.add_flag("-a,--append", append)->description("Run in append mode.");
+
+        app.add_option("-S,--style", style)
+            ->description("The Lua config/style file (same as for osm2pgsql).")
+            ->type_name("FILE");
+
+        app.add_option("-j,--jobs", jobs)
+            ->check(CLI::Range(1, 256))
+            ->description("Number of parallel jobs (default: 1, max 256).")
+            ->type_name("NUM");
+
+        // ------------------------------------------------------------------
+        // Database options
+        // ------------------------------------------------------------------
+
+        app.add_option("--middle-schema", middle_dbschema)
+            ->description("Database schema for middle tables (default: setting "
+                          "of --schema).")
+            ->type_name("SCHEMA")
+            ->group("Database options");
+
+        app.add_option("--schema", dbschema)
+            ->description("Database schema (default: 'public').")
+            ->type_name("SCHEMA")
+            ->group("Database options");
+
+        try {
+            app.parse(argc, argv);
+        } catch (...) {
+            log_info("osm2pgsql-gen version {}", get_osm2pgsql_version());
+            throw;
         }
 
-        if (log_level == "debug") {
-            get_logger().set_level(log_level::debug);
-        } else if (log_level == "info" || log_level.empty()) {
-            get_logger().set_level(log_level::info);
-        } else if (log_level == "warn") {
-            get_logger().set_level(log_level::warn);
-        } else if (log_level == "error") {
-            get_logger().set_level(log_level::error);
-        } else {
-            log_error("Unknown log level: {}. "
-                      "Use 'debug', 'info', 'warn', or 'error'.",
-                      log_level);
-            return 2;
+        if (app.want_help()) {
+            std::cout << app.help();
+            return 0;
         }
 
-        if (middle_dbschema.empty()) {
-            middle_dbschema = dbschema;
+        if (app.want_version()) {
+            print_version("osm2pgsql-gen");
+            fmt::print(stderr, "OpenCV {}\n", CV_VERSION);
+            fmt::print(stderr, "{}\n", potrace_version());
+            return 0;
         }
-
-        util::timer_t timer_overall;
 
         log_info("osm2pgsql-gen version {}", get_osm2pgsql_version());
         log_warn("This is an EXPERIMENTAL extension to osm2pgsql.");
+
+        if (dbschema.empty()) {
+            log_error("Schema must not be empty");
+            return 2;
+        }
+        check_identifier(dbschema, "--schema");
+
+        if (middle_dbschema.empty()) {
+            middle_dbschema = dbschema;
+        } else {
+            check_identifier(middle_dbschema, "--middle-schema");
+        }
+
+        util::timer_t timer_overall;
 
         if (append) {
             log_debug("Running in append mode.");
@@ -774,19 +749,20 @@ int main(int argc, char *argv[])
                 jobs);
         }
 
-        if (pass_prompt) {
-            database_options.password = util::get_password();
-        }
-        auto const conninfo = build_conninfo(database_options);
+        auto const connection_params = app.connection_params();
 
         log_debug("Checking database capabilities...");
         {
-            pg_conn_t const db_connection{conninfo};
+            pg_conn_t const db_connection{connection_params, "gen.check"};
             init_database_capabilities(db_connection);
         }
 
-        properties_t properties{conninfo, middle_dbschema};
-        properties.load();
+        properties_t properties{connection_params, middle_dbschema};
+        if (!properties.load()) {
+            throw std::runtime_error{
+                "Did not find table 'osm2pgsql_properties' in database. "
+                "Database too old? Wrong schema?"};
+        }
 
         if (style.empty()) {
             style = properties.get_string("style", "");
@@ -796,8 +772,14 @@ int main(int argc, char *argv[])
             }
         }
 
+        if (properties.get_string("output", "flex") != "flex") {
+            throw std::runtime_error{
+                "osm2pgsql-gen only works with flex output"};
+        }
+
         bool const updatable = properties.get_bool("updatable", false);
-        genproc_t gen{style, conninfo, dbschema, append, updatable, jobs};
+        genproc_t gen{style,  connection_params, dbschema,
+                      append, updatable,         jobs};
         gen.run();
 
         osmium::MemoryUsage const mem;

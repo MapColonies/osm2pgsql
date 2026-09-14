@@ -5,7 +5,7 @@
 
 This file is part of Osmium (https://osmcode.org/libosmium).
 
-Copyright 2013-2023 Jochen Topf <jochen@topf.org> and others (see README).
+Copyright 2013-2026 Jochen Topf <jochen@topf.org> and others (see README).
 
 Boost Software License - Version 1.0 - August 17th, 2003
 
@@ -65,7 +65,7 @@ namespace osmium {
 
             class PBFParser final : public Parser {
 
-                std::string m_input_buffer{};
+                std::string m_input_buffer;
                 std::atomic<std::size_t>* m_offset_ptr;
                 int m_fd;
                 bool m_want_buffered_pages_removed;
@@ -100,41 +100,11 @@ namespace osmium {
                     m_input_buffer.erase(0, size);
                 }
 
-                static uint32_t get_size_in_network_byte_order(const char* d) noexcept {
-                    return (static_cast<uint32_t>(d[3])) |
-                           (static_cast<uint32_t>(d[2]) <<  8U) |
-                           (static_cast<uint32_t>(d[1]) << 16U) |
-                           (static_cast<uint32_t>(d[0]) << 24U);
-                }
-
                 static uint32_t check_size(uint32_t size) {
                     if (size > static_cast<uint32_t>(max_blob_header_size)) {
                         throw osmium::pbf_error{"invalid BlobHeader size (> max_blob_header_size)"};
                     }
                     return size;
-                }
-
-                /**
-                 * Read exactly size bytes from fd into buffer.
-                 *
-                 * @pre Value in size parameter must fit in unsigned int
-                 * @returns true if size bytes could be read
-                 *          false if EOF was encountered
-                 */
-                bool read_exactly(char* buffer, std::size_t size) {
-                    std::size_t to_read = size;
-
-                    while (to_read > 0) {
-                        auto const read_size = osmium::io::detail::reliable_read(m_fd, buffer + (size - to_read), static_cast<unsigned int>(to_read));
-                        if (read_size == 0) { // EOF
-                            return false;
-                        }
-                        to_read -= read_size;
-                    }
-
-                    *m_offset_ptr += size;
-
-                    return true;
                 }
 
                 /**
@@ -144,9 +114,14 @@ namespace osmium {
                 uint32_t read_blob_header_size_from_file() {
                     if (m_fd != -1) {
                         std::array<char, sizeof(uint32_t)> buffer{};
-                        if (!read_exactly(buffer.data(), buffer.size())) {
+                        if (!osmium::io::detail::read_exactly(m_fd, buffer.data(), static_cast<unsigned int>(buffer.size()))) {
                             return 0; // EOF
                         }
+
+                        if (m_offset_ptr) {
+                            *m_offset_ptr += buffer.size();
+                        }
+
                         return check_size(get_size_in_network_byte_order(buffer.data()));
                     }
 
@@ -230,8 +205,12 @@ namespace osmium {
                     if (m_fd != -1) {
                         buffer.resize(size);
 
-                        if (!read_exactly(&*buffer.begin(), size)) {
+                        if (!osmium::io::detail::read_exactly(m_fd, &*buffer.begin(), static_cast<unsigned int>(size))) {
                             throw osmium::pbf_error{"unexpected EOF"};
+                        }
+
+                        if (m_offset_ptr) {
+                            *m_offset_ptr += buffer.size();
                         }
                     } else {
                         ensure_available_in_input_queue(size);
@@ -269,6 +248,13 @@ namespace osmium {
                 }
 
             public:
+
+                static uint32_t get_size_in_network_byte_order(const char* d) noexcept {
+                    return (static_cast<uint32_t>(static_cast<uint8_t>(d[3]))) |
+                           (static_cast<uint32_t>(static_cast<uint8_t>(d[2])) <<  8U) |
+                           (static_cast<uint32_t>(static_cast<uint8_t>(d[1])) << 16U) |
+                           (static_cast<uint32_t>(static_cast<uint8_t>(d[0])) << 24U);
+                }
 
                 explicit PBFParser(parser_arguments& args) :
                     Parser(args),

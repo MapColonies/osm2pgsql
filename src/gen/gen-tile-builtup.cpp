@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -11,6 +11,7 @@
 
 #include "canvas.hpp"
 #include "geom-functions.hpp"
+#include "hex.hpp"
 #include "logging.hpp"
 #include "params.hpp"
 #include "pgsql.hpp"
@@ -21,13 +22,57 @@
 
 #include <osmium/util/string.hpp>
 
-static std::size_t round_up(std::size_t value, std::size_t multiple) noexcept
+namespace {
+
+std::size_t round_up(std::size_t value, std::size_t multiple) noexcept
 {
     return ((value + multiple - 1U) / multiple) * multiple;
 }
 
-gen_tile_builtup_t::gen_tile_builtup_t(pg_conn_t *connection, params_t *params)
-: gen_tile_t(connection, params), m_timer_draw(add_timer("draw")),
+void save_image_to_table(pg_conn_t *connection, canvas_t const &canvas,
+                         tile_t const &tile, double margin,
+                         std::string const &table, char const *variant,
+                         std::string const &table_prefix)
+{
+    auto const wkb = util::encode_hex(canvas.to_wkb(tile, margin));
+
+    connection->exec("INSERT INTO \"{}_{}_{}\" (zoom, x, y, rast)"
+                     " VALUES ({}, {}, {}, '{}')",
+                     table_prefix, table, variant, tile.zoom(), tile.x(),
+                     tile.y(), wkb);
+}
+
+struct param_canvas_t
+{
+    canvas_t canvas;
+    std::string table;
+};
+
+using canvas_list_t = std::vector<param_canvas_t>;
+
+void draw_from_db(double margin, canvas_list_t *canvas_list, pg_conn_t *conn,
+                  tile_t const &tile)
+{
+    int prep = 0;
+    auto const box = tile.box(margin);
+    for (auto &cc : *canvas_list) {
+        std::string const statement = "get_geoms_" + fmt::to_string(prep++);
+        auto const result =
+            conn->exec_prepared(statement.c_str(), box.min_x(), box.min_y(),
+                                box.max_x(), box.max_y());
+
+        for (int n = 0; n < result.num_tuples(); ++n) {
+            auto const geom = ewkb_to_geom(util::decode_hex(result.get(n, 0)));
+            cc.canvas.draw(geom, tile);
+        }
+    }
+}
+
+} // anonymous namespace
+
+gen_tile_builtup_t::gen_tile_builtup_t(pg_conn_t *connection, bool append,
+                                       params_t *params)
+: gen_tile_t(connection, append, params), m_timer_draw(add_timer("draw")),
   m_timer_simplify(add_timer("simplify")),
   m_timer_vectorize(add_timer("vectorize")), m_timer_write(add_timer("write"))
 {
@@ -83,11 +128,10 @@ CREATE TABLE IF NOT EXISTS "{}" (
     }
 
     if (params->get_bool("make_valid")) {
-        params->set(
-            "geom_sql",
-            "(ST_Dump(ST_CollectionExtract(ST_MakeValid($1), 3))).geom");
+        params->set("geom_sql", "(ST_Dump(ST_CollectionExtract(ST_MakeValid("
+                                "$1::geometry), 3))).geom");
     } else {
-        params->set("geom_sql", "$1");
+        params->set("geom_sql", "$1::geometry");
     }
 
     if ((m_image_extent & (m_image_extent - 1)) != 0) {
@@ -110,72 +154,25 @@ CREATE TABLE IF NOT EXISTS "{}" (
     auto const schema = get_params().get_string("schema");
     for (auto const &src_table : m_source_tables) {
         params_t tmp_params;
-        tmp_params.set("N", std::to_string(n++));
         tmp_params.set("SRC", qualified_name(schema, src_table));
 
-        dbexec(tmp_params, R"(
-PREPARE get_geoms_{N} (real, real, real, real) AS
- SELECT "{geom_column}", '' AS param
+        dbprepare(fmt::format("get_geoms_{}", n++), tmp_params, R"(
+SELECT "{geom_column}", '' AS param
  FROM {SRC}
- WHERE "{geom_column}" && ST_MakeEnvelope($1, $2, $3, $4, 3857)
+ WHERE "{geom_column}" && ST_MakeEnvelope($1::real, $2::real, $3::real, $4::real, 3857)
 )");
     }
 
     if (m_has_area_column) {
-        dbexec(R"(
-PREPARE insert_geoms (geometry, int, int) AS
- INSERT INTO {dest} ("{geom_column}", x, y, "{area_column}")
- VALUES ({geom_sql}, $2, $3, $4)
+        dbprepare("insert_geoms", R"(
+INSERT INTO {dest} ("{geom_column}", x, y, "{area_column}")
+ VALUES ({geom_sql}, $2::int, $3::int, $4::real)
 )");
     } else {
-        dbexec(R"(
-PREPARE insert_geoms (geometry, int, int) AS
- INSERT INTO {dest} ("{geom_column}", x, y)
- VALUES ({geom_sql}, $2, $3)
+        dbprepare("insert_geoms", R"(
+INSERT INTO {dest} ("{geom_column}", x, y)
+ VALUES ({geom_sql}, $2::int, $3::int)
 )");
-    }
-}
-
-static void save_image_to_table(pg_conn_t *connection, canvas_t const &canvas,
-                                tile_t const &tile, double margin,
-                                std::string const &table, char const *variant,
-                                std::string const &table_prefix)
-{
-    auto const wkb = to_hex(canvas.to_wkb(tile, margin));
-
-    connection->exec("INSERT INTO \"{}_{}_{}\" (zoom, x, y, rast)"
-                     " VALUES ({}, {}, {}, '{}')",
-                     table_prefix, table, variant, tile.zoom(), tile.x(),
-                     tile.y(), wkb);
-}
-
-namespace {
-
-struct param_canvas_t
-{
-    canvas_t canvas;
-    std::string table;
-};
-
-} // anonymous namespace
-
-using canvas_list_t = std::vector<param_canvas_t>;
-
-static void draw_from_db(double margin, canvas_list_t *canvas_list,
-                         pg_conn_t *conn, tile_t const &tile)
-{
-    int prep = 0;
-    auto const box = tile.box(margin);
-    for (auto &cc : *canvas_list) {
-        std::string const statement = "get_geoms_" + fmt::to_string(prep++);
-        auto const result =
-            conn->exec_prepared(statement.c_str(), box.min_x(), box.min_y(),
-                                box.max_x(), box.max_y());
-
-        for (int n = 0; n < result.num_tuples(); ++n) {
-            auto const geom = ewkb_to_geom(decode_hex(result.get(n, 0)));
-            cc.canvas.draw(geom, tile);
-        }
     }
 }
 
@@ -255,7 +252,7 @@ void gen_tile_builtup_t::process(tile_t const &tile)
     log_gen("Write geometries to destination table...");
     timer(m_timer_write).start();
     for (auto const &geom : geometries) {
-        auto const wkb = to_hex(geom_to_ewkb(geom));
+        auto const wkb = util::encode_hex(geom_to_ewkb(geom));
         if (m_has_area_column) {
             connection().exec_prepared("insert_geoms", wkb, tile.x(), tile.y(),
                                        geom::area(geom));
@@ -278,5 +275,8 @@ void gen_tile_builtup_t::post()
             }
         }
     }
-    dbexec("ANALYZE {dest}");
+
+    if (!append_mode()) {
+        dbexec("ANALYZE {dest}");
+    }
 }

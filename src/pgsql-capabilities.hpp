@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -22,6 +22,8 @@ bool has_schema(std::string const &value);
 bool has_tablespace(std::string const &value);
 bool has_index_method(std::string const &value);
 bool has_table(std::string schema, std::string const &name);
+
+bool is_geometry_type(unsigned int oid);
 
 void check_schema(std::string const &schema);
 

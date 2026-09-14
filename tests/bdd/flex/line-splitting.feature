@@ -7,23 +7,25 @@ Feature: Test splitting of lines
 
             tables.line = osm2pgsql.define_way_table('osm2pgsql_test_line', {
                 { column = 'tags', type = 'hstore' },
-                { column = 'geom', type = 'linestring', projection = 4326 }
+                { column = 'geom', type = 'linestring', projection = 4326, not_null = true }
             })
 
             tables.split = osm2pgsql.define_way_table('osm2pgsql_test_split', {
                 { column = 'tags', type = 'hstore' },
-                { column = 'geom', type = 'linestring', projection = 4326 }
+                { column = 'geom', type = 'linestring', projection = 4326, not_null = true }
             })
 
             function osm2pgsql.process_way(object)
-                tables.line:add_row({
+                tables.line:insert({
                     tags = object.tags,
-                    geom = { create = 'line' }
+                    geom = object:as_linestring()
                 })
-                tables.split:add_row({
-                    tags = object.tags,
-                    geom = { create = 'line', split_at = 1.0 }
-                })
+                for sgeom in object:as_linestring():segmentize(1.0):geometries() do
+                    tables.split:insert({
+                        tags = object.tags,
+                        geom = sgeom
+                    })
+                end
             end
             """
 
@@ -38,12 +40,12 @@ Feature: Test splitting of lines
         When running osm2pgsql flex
 
         Then table osm2pgsql_test_line contains exactly
-            | way_id | ST_Length(geom) | ST_AsText(geom) |
-            | 20     | 1.0             | 10, 11          |
-            | 21     | 2.5             | 10, 12          |
+            | way_id | ST_Length(geom) | geom!geo |
+            | 20     | 1.0             | 10, 11   |
+            | 21     | 2.5             | 10, 12   |
 
         And table osm2pgsql_test_split contains exactly
-            | way_id | ST_Length(geom) | ST_AsText(geom)      |
+            | way_id | ST_Length(geom) | geom!geo             |
             | 20     | 1.0             | 10, 11               |
             | 21     | 1.0             | 20.0 20.0, 21.0 20.0 |
             | 21     | 1.0             | 21.0 20.0, 22.0 20.0 |

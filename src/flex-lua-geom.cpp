@@ -3,18 +3,20 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "flex-lua-geom.hpp"
+#include "geom-box.hpp"
 #include "geom-functions.hpp"
 #include "geom-pole-of-inaccessibility.hpp"
 #include "lua-utils.hpp"
+#include "projection.hpp"
 
 #include <lua.hpp>
 
-static char const *const osm2pgsql_geometry_class = "osm2pgsql.Geometry";
+static char const *const OSM2PGSQL_GEOMETRY_CLASS = "osm2pgsql.Geometry";
 
 geom::geometry_t *create_lua_geometry_object(lua_State *lua_state)
 {
@@ -22,7 +24,7 @@ geom::geometry_t *create_lua_geometry_object(lua_State *lua_state)
     new (ptr) geom::geometry_t{};
 
     // Set the metatable of this object
-    luaL_getmetatable(lua_state, osm2pgsql_geometry_class);
+    luaL_getmetatable(lua_state, OSM2PGSQL_GEOMETRY_CLASS);
     lua_setmetatable(lua_state, -2);
 
     return static_cast<geom::geometry_t *>(ptr);
@@ -30,9 +32,21 @@ geom::geometry_t *create_lua_geometry_object(lua_State *lua_state)
 
 geom::geometry_t *unpack_geometry(lua_State *lua_state, int n) noexcept
 {
-    void *user_data = luaL_checkudata(lua_state, n, osm2pgsql_geometry_class);
+    void *user_data = luaL_checkudata(lua_state, n, OSM2PGSQL_GEOMETRY_CLASS);
     luaL_argcheck(lua_state, user_data != nullptr, n, "'Geometry' expected");
     return static_cast<geom::geometry_t *>(user_data);
+}
+
+namespace {
+
+int geom_equals(lua_State *lua_state)
+{
+    auto const *const geometry1 = unpack_geometry(lua_state, 1);
+    auto const *const geometry2 = unpack_geometry(lua_state, 2);
+
+    lua_pushboolean(lua_state, *geometry1 == *geometry2);
+
+    return 1;
 }
 
 /**
@@ -53,7 +67,7 @@ int geom_gc(lua_State *lua_state) noexcept
 // The following functions are called when their counterparts in Lua are
 // called on geometry objects.
 
-static int geom_area(lua_State *lua_state)
+int geom_area(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
 
@@ -66,11 +80,11 @@ static int geom_area(lua_State *lua_state)
     return 1;
 }
 
-static int geom_spherical_area(lua_State *lua_state)
+int geom_spherical_area(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
 
-    if (input_geometry->srid() != 4326) {
+    if (input_geometry->srid() != PROJ_LATLONG) {
         throw std::runtime_error{"Can only calculate spherical area for "
                                  "geometries in WGS84 (4326) coordinates."};
     }
@@ -84,7 +98,7 @@ static int geom_spherical_area(lua_State *lua_state)
     return 1;
 }
 
-static int geom_length(lua_State *lua_state)
+int geom_length(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
     try {
@@ -96,7 +110,26 @@ static int geom_length(lua_State *lua_state)
     return 1;
 }
 
-static int geom_centroid(lua_State *lua_state)
+int geom_spherical_length(lua_State *lua_state)
+{
+    auto const *const input_geometry = unpack_geometry(lua_state);
+
+    if (input_geometry->srid() != PROJ_LATLONG) {
+        throw std::runtime_error{"Can only calculate spherical length for "
+                                 "geometries in WGS84 (4326) coordinates."};
+    }
+
+    try {
+        lua_pushnumber(lua_state, geom::spherical_length(*input_geometry));
+    } catch (...) {
+        return luaL_error(lua_state,
+                          "Unknown error in 'spherical_length()'.\n");
+    }
+
+    return 1;
+}
+
+int geom_centroid(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
 
@@ -110,7 +143,21 @@ static int geom_centroid(lua_State *lua_state)
     return 1;
 }
 
-static int geom_geometry_n(lua_State *lua_state)
+int geom_n_points(lua_State *lua_state)
+{
+    auto const *const input_geometry = unpack_geometry(lua_state);
+
+    try {
+        lua_pushinteger(lua_state,
+                        static_cast<lua_Integer>(input_geometry->n_points()));
+    } catch (...) {
+        return luaL_error(lua_state, "Unknown error in 'n_points()'.\n");
+    }
+
+    return 1;
+}
+
+int geom_geometry_n(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
     auto const index = static_cast<int>(luaL_checkinteger(lua_state, 2));
@@ -125,7 +172,7 @@ static int geom_geometry_n(lua_State *lua_state)
     return 1;
 }
 
-static int geom_geometry_type(lua_State *lua_state)
+int geom_geometry_type(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
 
@@ -139,14 +186,14 @@ static int geom_geometry_type(lua_State *lua_state)
     return 1;
 }
 
-static int geom_is_null(lua_State *lua_state)
+int geom_is_null(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
     lua_pushboolean(lua_state, input_geometry->is_null());
     return 1;
 }
 
-static int geom_reverse(lua_State *lua_state)
+int geom_reverse(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
 
@@ -160,7 +207,7 @@ static int geom_reverse(lua_State *lua_state)
     return 1;
 }
 
-static int geom_line_merge(lua_State *lua_state)
+int geom_line_merge(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
 
@@ -174,7 +221,7 @@ static int geom_line_merge(lua_State *lua_state)
     return 1;
 }
 
-static int geom_num_geometries(lua_State *lua_state)
+int geom_num_geometries(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
     lua_pushinteger(lua_state,
@@ -182,7 +229,7 @@ static int geom_num_geometries(lua_State *lua_state)
     return 1;
 }
 
-static int geom_pole_of_inaccessibility(lua_State *lua_state)
+int geom_pole_of_inaccessibility(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
 
@@ -210,7 +257,7 @@ static int geom_pole_of_inaccessibility(lua_State *lua_state)
     return 1;
 }
 
-static int geom_segmentize(lua_State *lua_state)
+int geom_segmentize(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
     double const max_segment_length = luaL_checknumber(lua_state, 2);
@@ -225,7 +272,7 @@ static int geom_segmentize(lua_State *lua_state)
     return 1;
 }
 
-static int geom_simplify(lua_State *lua_state)
+int geom_simplify(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
     double const tolerance = luaL_checknumber(lua_state, 2);
@@ -240,7 +287,24 @@ static int geom_simplify(lua_State *lua_state)
     return 1;
 }
 
-static int geom_srid(lua_State *lua_state)
+int geom_get_bbox(lua_State *lua_state)
+{
+    auto const *const input_geometry = unpack_geometry(lua_state);
+
+    try {
+        auto const box = geom::envelope(*input_geometry);
+        lua_pushnumber(lua_state, box.min_x());
+        lua_pushnumber(lua_state, box.min_y());
+        lua_pushnumber(lua_state, box.max_x());
+        lua_pushnumber(lua_state, box.max_y());
+    } catch (...) {
+        return luaL_error(lua_state, "Unknown error in 'get_bbox()'.\n");
+    }
+
+    return 4;
+}
+
+int geom_srid(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
     lua_pushinteger(lua_state,
@@ -251,18 +315,18 @@ static int geom_srid(lua_State *lua_state)
 // XXX Implementation for Lua __tostring function on geometries. Currently
 // just returns the type as string. This could be improved, for instance by
 // showing a WKT representation of the geometry.
-static int geom_tostring(lua_State *lua_state)
+int geom_tostring(lua_State *lua_state)
 {
     return geom_geometry_type(lua_state);
 }
 
-static int geom_transform(lua_State *lua_state)
+int geom_transform(lua_State *lua_state)
 {
     auto const *const input_geometry = unpack_geometry(lua_state);
     auto const srid = static_cast<int>(luaL_checkinteger(lua_state, 2));
 
     try {
-        if (input_geometry->srid() != 4326) {
+        if (input_geometry->srid() != PROJ_LATLONG) {
             throw std::runtime_error{
                 "Can not transform already transformed geometry."};
         }
@@ -275,38 +339,32 @@ static int geom_transform(lua_State *lua_state)
     return 1;
 }
 
+} // anonymous namespace
+
 void init_geometry_class(lua_State *lua_state)
 {
-    lua_getglobal(lua_state, "osm2pgsql");
-    if (luaL_newmetatable(lua_state, osm2pgsql_geometry_class) != 1) {
-        throw std::runtime_error{"Internal error: Lua newmetatable failed."};
-    }
-    lua_pushvalue(lua_state, -1); // Copy of new metatable
-
-    // Add metatable as osm2pgsql.Geometry so we can access it from Lua
-    lua_setfield(lua_state, -3, "Geometry");
-
-    luaX_add_table_func(lua_state, "__gc", geom_gc);
-    luaX_add_table_func(lua_state, "__len", geom_num_geometries);
-    luaX_add_table_func(lua_state, "__tostring", geom_tostring);
-    lua_pushvalue(lua_state, -1);
-    lua_setfield(lua_state, -2, "__index");
-    luaX_add_table_func(lua_state, "area", geom_area);
-    luaX_add_table_func(lua_state, "length", geom_length);
-    luaX_add_table_func(lua_state, "centroid", geom_centroid);
-    luaX_add_table_func(lua_state, "geometry_n", geom_geometry_n);
-    luaX_add_table_func(lua_state, "geometry_type", geom_geometry_type);
-    luaX_add_table_func(lua_state, "is_null", geom_is_null);
-    luaX_add_table_func(lua_state, "line_merge", geom_line_merge);
-    luaX_add_table_func(lua_state, "reverse", geom_reverse);
-    luaX_add_table_func(lua_state, "num_geometries", geom_num_geometries);
-    luaX_add_table_func(lua_state, "pole_of_inaccessibility",
-                        geom_pole_of_inaccessibility);
-    luaX_add_table_func(lua_state, "segmentize", geom_segmentize);
-    luaX_add_table_func(lua_state, "simplify", geom_simplify);
-    luaX_add_table_func(lua_state, "spherical_area", geom_spherical_area);
-    luaX_add_table_func(lua_state, "srid", geom_srid);
-    luaX_add_table_func(lua_state, "transform", geom_transform);
-
-    lua_pop(lua_state, 2); // __index, global osmp2gsql
+    luaX_set_up_metatable(
+        lua_state, "Geometry", OSM2PGSQL_GEOMETRY_CLASS,
+        {{"__eq", geom_equals},
+         {"__gc", geom_gc},
+         {"__len", geom_num_geometries},
+         {"__tostring", geom_tostring},
+         {"area", geom_area},
+         {"length", geom_length},
+         {"centroid", geom_centroid},
+         {"get_bbox", geom_get_bbox},
+         {"geometry_n", geom_geometry_n},
+         {"geometry_type", geom_geometry_type},
+         {"is_null", geom_is_null},
+         {"line_merge", geom_line_merge},
+         {"n_points", geom_n_points},
+         {"reverse", geom_reverse},
+         {"num_geometries", geom_num_geometries},
+         {"pole_of_inaccessibility", geom_pole_of_inaccessibility},
+         {"segmentize", geom_segmentize},
+         {"simplify", geom_simplify},
+         {"spherical_area", geom_spherical_area},
+         {"spherical_length", geom_spherical_length},
+         {"srid", geom_srid},
+         {"transform", geom_transform}});
 }

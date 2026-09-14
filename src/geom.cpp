@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -30,6 +30,25 @@ bool operator!=(polygon_t const &a, polygon_t const &b) noexcept
     return !(a == b);
 }
 
+[[nodiscard]] std::size_t polygon_t::n_points() const
+{
+    return m_outer.size() +
+           std::accumulate(m_inners.cbegin(), m_inners.cend(), std::size_t{0},
+                           [](std::size_t sum, ring_t const &ring) {
+                               return sum + ring.size();
+                           });
+}
+
+[[nodiscard]] std::size_t geometry_t::n_points() const
+{
+    return visit([](auto const &input) { return input.n_points(); });
+}
+
+std::size_t n_points(geometry_t const &geom)
+{
+    return geom.visit([](auto const &input) { return input.n_points(); });
+}
+
 std::size_t dimension(collection_t const &geom)
 {
     return std::accumulate(geom.cbegin(), geom.cend(), 0ULL,
@@ -40,7 +59,7 @@ std::size_t dimension(collection_t const &geom)
 
 std::size_t dimension(geometry_t const &geom)
 {
-    return geom.visit([&](auto const &input) { return dimension(input); });
+    return geom.visit([](auto const &input) { return dimension(input); });
 }
 
 } // namespace geom

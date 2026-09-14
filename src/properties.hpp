@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -17,6 +17,8 @@
  * command line options or from the input files, they are used to keep the
  * configuration consistent between imports and updates.
  */
+
+#include "pgsql-params.hpp"
 
 #include <cstdint>
 #include <map>
@@ -30,12 +32,14 @@ public:
     /**
      * Create new properties store.
      *
-     * \param conninfo Connection info used to connect to the database.
+     * \param connection_params Parameters used to connect to the database.
      * \param schema The schema used for storing the data,
      *
      * \pre You must have called init_database_capabilities() before this.
      */
-    properties_t(std::string conninfo, std::string schema);
+    properties_t(connection_params_t connection_params, std::string schema);
+
+    std::size_t size() const noexcept { return m_properties.size(); }
 
     std::string get_string(std::string const &property,
                            std::string const &default_value) const;
@@ -49,10 +53,8 @@ public:
      *
      * \param property Name of the property
      * \param value Value of the property
-     * \param update_database Update database with this value immediately.
      */
-    void set_string(std::string property, std::string value,
-                    bool update_database = false);
+    void set_string(std::string const &property, std::string const &value);
 
     /**
      * Set property to integer value. The integer will be converted to a string
@@ -60,10 +62,8 @@ public:
      *
      * \param property Name of the property
      * \param value Value of the property
-     * \param update_database Update database with this value immediately.
      */
-    void set_int(std::string property, int64_t value,
-                 bool update_database = false);
+    void set_int(std::string const &property, int64_t value);
 
     /**
      * Set property to boolean value. In the database this will show up as the
@@ -71,15 +71,18 @@ public:
      *
      * \param property Name of the property
      * \param value Value of the property
-     * \param update_database Update database with this value immediately.
      */
-    void set_bool(std::string property, bool value,
-                  bool update_database = false);
+    void set_bool(std::string const &property, bool value);
 
     /**
-     * Store all properties in the database. Creates the properties table in
-     * the database if needed. Removes any properties that might already be
-     * stored in the database.
+     * Initialize the database table 'osm2pgsql_properties'. It is created if
+     * it does not exist and truncated.
+     */
+    void init_table();
+
+    /**
+     * Store all properties in the database that changed since the last store.
+     * Overwrites any properties that might already be stored in the database.
      */
     void store();
 
@@ -91,11 +94,21 @@ public:
      */
     bool load();
 
+    auto begin() const { return m_properties.begin(); }
+
+    auto end() const { return m_properties.end(); }
+
 private:
     std::string table_name() const;
 
+    // The properties
     std::map<std::string, std::string> m_properties;
-    std::string m_conninfo;
+
+    // Temporary storage of all properties that need to be updated in the
+    // database.
+    std::map<std::string, std::string> m_to_update;
+
+    connection_params_t m_connection_params;
     std::string m_schema;
     bool m_has_properties_table;
 

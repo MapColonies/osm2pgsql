@@ -1,9 +1,6 @@
 #include "format.hpp"
 #include "reprojection.hpp"
 
-#include <osmium/geom/coordinates.hpp>
-#include <osmium/geom/util.hpp>
-
 #include <proj.h>
 
 namespace {
@@ -11,7 +8,7 @@ namespace {
 /**
  * Generic projection using proj library (version 6 and above).
  */
-class generic_reprojection_t : public reprojection
+class generic_reprojection_t : public reprojection_t
 {
 public:
     explicit generic_reprojection_t(int srs)
@@ -20,14 +17,12 @@ public:
       m_transformation_tile(create_transformation(srs, PROJ_SPHERE_MERC))
     {}
 
-    geom::point_t
-    reproject(geom::point_t point) const noexcept override
+    geom::point_t reproject(geom::point_t point) const noexcept override
     {
         return transform(m_transformation.get(), point);
     }
 
-    geom::point_t
-    target_to_tile(geom::point_t point) const override
+    geom::point_t target_to_tile(geom::point_t point) const override
     {
         return transform(m_transformation_tile.get(), point);
     }
@@ -112,13 +107,12 @@ private:
 
 } // anonymous namespace
 
-std::shared_ptr<reprojection> reprojection::make_generic_projection(int srs)
+std::shared_ptr<reprojection_t> reprojection_t::make_generic_projection(int srs)
 {
     return std::make_shared<generic_reprojection_t>(srs);
 }
 
 std::string get_proj_version()
 {
-    return fmt::format("[API 6] {}", proj_info().version);
+    return fmt::format("{}", proj_info().version);
 }
-

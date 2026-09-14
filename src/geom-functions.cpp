@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -11,6 +11,7 @@
 
 #include "geom-boost-adaptor.hpp"
 #include "overloaded.hpp"
+#include "projection.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -40,18 +41,16 @@ std::string_view geometry_type(geometry_t const &geom)
 {
     using namespace std::literals::string_view_literals;
     return geom.visit(overloaded{
-        [&](geom::nullgeom_t const & /*input*/) { return "NULL"sv; },
-        [&](geom::point_t const & /*input*/) { return "POINT"sv; },
-        [&](geom::linestring_t const & /*input*/) { return "LINESTRING"sv; },
-        [&](geom::polygon_t const & /*input*/) { return "POLYGON"sv; },
-        [&](geom::multipoint_t const & /*input*/) { return "MULTIPOINT"sv; },
-        [&](geom::multilinestring_t const & /*input*/) {
+        [](geom::nullgeom_t const & /*input*/) { return "NULL"sv; },
+        [](geom::point_t const & /*input*/) { return "POINT"sv; },
+        [](geom::linestring_t const & /*input*/) { return "LINESTRING"sv; },
+        [](geom::polygon_t const & /*input*/) { return "POLYGON"sv; },
+        [](geom::multipoint_t const & /*input*/) { return "MULTIPOINT"sv; },
+        [](geom::multilinestring_t const & /*input*/) {
             return "MULTILINESTRING"sv;
         },
-        [&](geom::multipolygon_t const & /*input*/) {
-            return "MULTIPOLYGON"sv;
-        },
-        [&](geom::collection_t const & /*input*/) {
+        [](geom::multipolygon_t const & /*input*/) { return "MULTIPOLYGON"sv; },
+        [](geom::collection_t const & /*input*/) {
             return "GEOMETRYCOLLECTION"sv;
         }});
 }
@@ -61,17 +60,17 @@ std::string_view geometry_type(geometry_t const &geom)
 std::size_t num_geometries(geometry_t const &geom)
 {
     return geom.visit(
-        [&](auto const &input) { return input.num_geometries(); });
+        [](auto const &input) { return input.num_geometries(); });
 }
 
 /****************************************************************************/
 
 namespace {
 
-class geometry_n_visitor
+class geometry_n_visitor_t
 {
 public:
-    geometry_n_visitor(geometry_t *output, std::size_t n)
+    geometry_n_visitor_t(geometry_t *output, std::size_t n)
     : m_output(output), m_n(n)
     {}
 
@@ -96,7 +95,7 @@ private:
     geometry_t *m_output;
     std::size_t m_n;
 
-}; // class geometry_n_visitor
+}; // class geometry_n_visitor_t
 
 } // anonymous namespace
 
@@ -108,7 +107,7 @@ void geometry_n(geometry_t *output, geometry_t const &input, std::size_t n)
         return;
     }
 
-    input.visit(geometry_n_visitor{output, n - 1});
+    input.visit(geometry_n_visitor_t{output, n - 1});
     output->set_srid(input.srid());
 }
 
@@ -125,14 +124,15 @@ namespace {
 
 void set_to_same_type(geometry_t *output, geometry_t const &input)
 {
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     input.visit([&](auto in) { output->set<decltype(in)>(); });
 }
 
-class transform_visitor
+class transform_visitor_t
 {
 public:
-    explicit transform_visitor(geometry_t *output,
-                               reprojection const *reprojection)
+    explicit transform_visitor_t(geometry_t *output,
+                                 reprojection_t const *reprojection)
     : m_output(output), m_reprojection(reprojection)
     {}
 
@@ -155,40 +155,40 @@ public:
 
     void operator()(multipoint_t const &input) const
     {
-        auto &m = m_output->get<multipoint_t>();
-        m.reserve(input.num_geometries());
+        auto &mgeom = m_output->get<multipoint_t>();
+        mgeom.reserve(input.num_geometries());
         for (auto const point : input) {
-            m.add_geometry(project(point));
+            mgeom.add_geometry(project(point));
         }
     }
 
     void operator()(multilinestring_t const &input) const
     {
-        auto &m = m_output->set<multilinestring_t>();
-        m.reserve(input.num_geometries());
+        auto &mgeom = m_output->set<multilinestring_t>();
+        mgeom.reserve(input.num_geometries());
         for (auto const &line : input) {
-            transform_points(&m.add_geometry(), line);
+            transform_points(&mgeom.add_geometry(), line);
         }
     }
 
     void operator()(multipolygon_t const &input) const
     {
-        auto &m = m_output->set<multipolygon_t>();
-        m.reserve(input.num_geometries());
+        auto &mgeom = m_output->set<multipolygon_t>();
+        mgeom.reserve(input.num_geometries());
         for (auto const &polygon : input) {
-            transform_polygon(&m.add_geometry(), polygon);
+            transform_polygon(&mgeom.add_geometry(), polygon);
         }
     }
 
     void operator()(collection_t const &input) const
     {
-        auto &m = m_output->get<collection_t>();
-        m.reserve(input.num_geometries());
+        auto &mgeom = m_output->get<collection_t>();
+        mgeom.reserve(input.num_geometries());
         for (auto const &geom : input) {
-            auto &new_geom = m.add_geometry();
+            auto &new_geom = mgeom.add_geometry();
             set_to_same_type(&new_geom, geom);
             new_geom.set_srid(0);
-            geom.visit(transform_visitor{&new_geom, m_reprojection});
+            geom.visit(transform_visitor_t{&new_geom, m_reprojection});
         }
     }
 
@@ -218,23 +218,24 @@ private:
     }
 
     geometry_t *m_output;
-    reprojection const *m_reprojection;
+    reprojection_t const *m_reprojection;
 
-}; // class transform_visitor
+}; // class transform_visitor_t
 
 } // anonymous namespace
 
 void transform(geometry_t *output, geometry_t const &input,
-               reprojection const &reprojection)
+               reprojection_t const &reprojection)
 {
-    assert(input.srid() == 4326);
+    assert(input.srid() == PROJ_LATLONG);
 
     set_to_same_type(output, input);
     output->set_srid(reprojection.target_srs());
-    input.visit(transform_visitor{output, &reprojection});
+    input.visit(transform_visitor_t{output, &reprojection});
 }
 
-geometry_t transform(geometry_t const &input, reprojection const &reprojection)
+geometry_t transform(geometry_t const &input,
+                     reprojection_t const &reprojection)
 {
     geometry_t output;
     transform(&output, input, reprojection);
@@ -249,34 +250,32 @@ namespace {
  * Helper class for iterating over all points except the first one in a point
  * list.
  */
-class without_first
+class without_first_t
 {
 public:
-    explicit without_first(point_list_t const &list) : m_list(list) {}
+    explicit without_first_t(point_list_t const &list) : m_list(&list) {}
 
     point_list_t::const_iterator begin()
     {
-        assert(m_list.begin() != m_list.end());
-        return std::next(m_list.begin());
+        assert(m_list->cbegin() != m_list->cend());
+        return std::next(m_list->cbegin());
     }
 
-    point_list_t::const_iterator end() { return m_list.end(); }
+    point_list_t::const_iterator end() { return m_list->end(); }
 
 private:
-    point_list_t const &m_list;
-}; // class without_first
+    point_list_t const *m_list;
+}; // class without_first_t
 
-} // anonymous namespace
-
-static void split_linestring(linestring_t const &line, double split_at,
-                             multilinestring_t *output)
+void split_linestring(linestring_t const &line, double split_at,
+                      multilinestring_t *output)
 {
     double dist = 0;
     point_t prev_pt{line.front()};
     linestring_t *out = &output->add_geometry();
     out->push_back(prev_pt);
 
-    for (auto const &this_pt : without_first(line)) {
+    for (auto const &this_pt : without_first_t(line)) {
         double const delta = distance(prev_pt, this_pt);
 
         // figure out if the addition of this point would take the total
@@ -320,6 +319,8 @@ static void split_linestring(linestring_t const &line, double split_at,
     }
 }
 
+} // anonymous namespace
+
 void segmentize(geometry_t *output, geometry_t const &input,
                 double max_segment_length)
 {
@@ -350,54 +351,87 @@ geometry_t segmentize(geometry_t const &input, double max_segment_length)
 double area(geometry_t const &geom)
 {
     return std::abs(geom.visit(
-        overloaded{[&](geom::nullgeom_t const & /*input*/) { return 0.0; },
-                   [&](geom::collection_t const &input) {
+        overloaded{[](geom::nullgeom_t const & /*input*/) { return 0.0; },
+                   [](geom::collection_t const &input) {
                        return std::accumulate(input.cbegin(), input.cend(), 0.0,
                                               [](double sum, auto const &geom) {
                                                   return sum + area(geom);
                                               });
                    },
-                   [&](auto const &input) {
+                   [](auto const &input) {
                        return static_cast<double>(boost::geometry::area(input));
                    }}));
 }
 
 /****************************************************************************/
 
-static double spherical_area(polygon_t const &geom)
+namespace {
+
+using sph_point = boost::geometry::model::point<
+    double, 2, boost::geometry::cs::geographic<boost::geometry::degree>>;
+
+double spherical_area(polygon_t const &geom)
 {
-    boost::geometry::strategy::area::spherical<> const spherical_earth{
-        6371008.8};
-
-    using sph_point = boost::geometry::model::point<
-        double, 2,
-        boost::geometry::cs::spherical_equatorial<boost::geometry::degree>>;
-
     boost::geometry::model::polygon<sph_point> sph_geom;
     boost::geometry::convert(geom, sph_geom);
-    return boost::geometry::area(sph_geom, spherical_earth);
+
+    return boost::geometry::area(sph_geom,
+                                 boost::geometry::strategy::area::geographic<
+                                     boost::geometry::strategy::vincenty>{});
 }
+
+double spherical_length(linestring_t const &geom)
+{
+    boost::geometry::model::linestring<sph_point> sph_geom;
+    boost::geometry::convert(geom, sph_geom);
+
+    return static_cast<double>(boost::geometry::length(
+        sph_geom, boost::geometry::strategy::distance::vincenty<>{}));
+}
+
+} // anonymous namespace
 
 double spherical_area(geometry_t const &geom)
 {
-    assert(geom.srid() == 4326);
+    assert(geom.srid() == PROJ_LATLONG);
 
     return std::abs(geom.visit(overloaded{
-        [&](geom::nullgeom_t const & /*input*/) { return 0.0; },
-        [&](geom::collection_t const &input) {
+        [](geom::nullgeom_t const & /*input*/) { return 0.0; },
+        [](geom::collection_t const &input) {
             return std::accumulate(input.cbegin(), input.cend(), 0.0,
                                    [](double sum, auto const &geom) {
                                        return sum + spherical_area(geom);
                                    });
         },
-        [&](geom::polygon_t const &input) { return spherical_area(input); },
-        [&](geom::multipolygon_t const &input) {
+        [](geom::polygon_t const &input) { return spherical_area(input); },
+        [](geom::multipolygon_t const &input) {
             return std::accumulate(input.cbegin(), input.cend(), 0.0,
-                                   [&](double sum, auto const &geom) {
+                                   [](double sum, auto const &geom) {
                                        return sum + spherical_area(geom);
                                    });
         },
-        [&](auto const & /*input*/) { return 0.0; }}));
+        [](auto const & /*input*/) { return 0.0; }}));
+}
+
+double spherical_length(geometry_t const &geom)
+{
+    assert(geom.srid() == PROJ_LATLONG);
+
+    return geom.visit(overloaded{
+        [](geom::collection_t const &input) {
+            return std::accumulate(input.cbegin(), input.cend(), 0.0,
+                                   [](double sum, auto const &geom) {
+                                       return sum + spherical_length(geom);
+                                   });
+        },
+        [](geom::linestring_t const &input) { return spherical_length(input); },
+        [](geom::multilinestring_t const &input) {
+            return std::accumulate(input.cbegin(), input.cend(), 0.0,
+                                   [](double sum, auto const &geom) {
+                                       return sum + spherical_length(geom);
+                                   });
+        },
+        [](auto const & /*input*/) { return 0.0; }});
 }
 
 /****************************************************************************/
@@ -405,15 +439,15 @@ double spherical_area(geometry_t const &geom)
 double length(geometry_t const &geom)
 {
     return geom.visit(overloaded{
-        [&](geom::nullgeom_t const & /*input*/) { return 0.0; },
-        [&](geom::collection_t const &input) {
+        [](geom::nullgeom_t const & /*input*/) { return 0.0; },
+        [](geom::collection_t const &input) {
             double total = 0.0;
             for (auto const &item : input) {
                 total += length(item);
             }
             return total;
         },
-        [&](auto const &input) {
+        [](auto const &input) {
             return static_cast<double>(boost::geometry::length(input));
         }});
 }
@@ -422,17 +456,19 @@ double length(geometry_t const &geom)
 
 namespace {
 
-class split_visitor
+class split_visitor_t
 {
 public:
-    split_visitor(std::vector<geometry_t> *output, int srid) noexcept
+    split_visitor_t(std::vector<geometry_t> *output, int srid) noexcept
     : m_output(output), m_srid(srid)
     {}
 
     template <typename T>
-    void operator()(T) const
+    void operator()(T const &) const
     {}
 
+    // false positive https://github.com/llvm/llvm-project/issues/74738
+    // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
     void operator()(geom::collection_t &&geom) const
     {
         for (auto &&sgeom : geom) {
@@ -441,6 +477,8 @@ public:
     }
 
     template <typename T>
+    // false positive https://github.com/llvm/llvm-project/issues/74738
+    // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
     void operator()(geom::multigeometry_t<T> &&geom) const
     {
         for (auto &&sgeom : geom) {
@@ -452,7 +490,7 @@ private:
     std::vector<geometry_t> *m_output;
     int m_srid;
 
-}; // class split_visitor
+}; // class split_visitor_t
 
 } // anonymous namespace
 
@@ -461,7 +499,7 @@ std::vector<geometry_t> split_multi(geometry_t &&geom, bool split_multi)
     std::vector<geometry_t> output;
 
     if (split_multi && geom.is_multi()) {
-        visit(split_visitor{&output, geom.srid()}, std::move(geom));
+        visit(split_visitor_t{&output, geom.srid()}, std::move(geom));
     } else if (!geom.is_null()) {
         output.push_back(std::move(geom));
     }
@@ -471,23 +509,25 @@ std::vector<geometry_t> split_multi(geometry_t &&geom, bool split_multi)
 
 /****************************************************************************/
 
-static void reverse(geom::nullgeom_t * /*output*/,
-                    geom::nullgeom_t const & /*input*/) noexcept
+namespace {
+
+void reverse(geom::nullgeom_t * /*output*/,
+             geom::nullgeom_t const & /*input*/) noexcept
 {}
 
-static void reverse(geom::point_t *output, geom::point_t const &input) noexcept
+void reverse(geom::point_t *output, geom::point_t const &input) noexcept
 {
     *output = input;
 }
 
-static void reverse(point_list_t *output, point_list_t const &input)
+void reverse(point_list_t *output, point_list_t const &input)
 {
     output->reserve(input.size());
     std::reverse_copy(input.cbegin(), input.cend(),
                       std::back_inserter(*output));
 }
 
-static void reverse(geom::polygon_t *output, geom::polygon_t const &input)
+void reverse(geom::polygon_t *output, geom::polygon_t const &input)
 {
     reverse(&output->outer(), input.outer());
     for (auto const &g : input.inners()) {
@@ -504,6 +544,8 @@ void reverse(geom::multigeometry_t<T> *output,
         reverse(&output->add_geometry(), g);
     }
 }
+
+} // anonymous namespace
 
 void reverse(geometry_t *output, geometry_t const &input)
 {
@@ -525,13 +567,16 @@ geometry_t reverse(geometry_t const &input)
 
 /****************************************************************************/
 
+namespace {
+
 /**
  * Add points specified by iterators to the linestring. If linestring is not
  * empty, do not add the first point returned by *it.
  */
 template <typename ITERATOR>
-static void add_nodes_to_linestring(linestring_t *linestring, ITERATOR it,
-                                    ITERATOR end)
+void add_nodes_to_linestring(
+    linestring_t *linestring, ITERATOR it,
+    ITERATOR end) // NOLINT(performance-unnecessary-value-param)
 {
     if (!linestring->empty()) {
         assert(it != end);
@@ -543,6 +588,8 @@ static void add_nodes_to_linestring(linestring_t *linestring, ITERATOR it,
         ++it;
     }
 }
+
+} // anonymous namespace
 
 void line_merge(geometry_t *output, geometry_t const &input)
 {
@@ -588,15 +635,15 @@ void line_merge(geometry_t *output, geometry_t const &input)
     std::vector<endpoint_t> endpoints;
 
     // ...and a list of connections.
-    constexpr auto const NOCONN = std::numeric_limits<std::size_t>::max();
+    constexpr std::size_t NOCONN = std::numeric_limits<std::size_t>::max();
 
     struct connection_t
     {
         std::size_t left = NOCONN;
-        linestring_t const *ls;
+        linestring_t const *linestring;
         std::size_t right = NOCONN;
 
-        explicit connection_t(linestring_t const *l) noexcept : ls(l) {}
+        explicit connection_t(linestring_t const *l) noexcept : linestring(l) {}
     };
 
     std::vector<connection_t> conns;
@@ -633,7 +680,7 @@ void line_merge(geometry_t *output, geometry_t const &input)
     std::size_t done_ways = 0;
     std::size_t const todo_ways = conns.size();
     for (std::size_t i = 0; i < todo_ways; ++i) {
-        if (!conns[i].ls ||
+        if (!conns[i].linestring ||
             (conns[i].left != NOCONN && conns[i].right != NOCONN)) {
             continue; // way already done or not the beginning of a segment
         }
@@ -645,8 +692,8 @@ void line_merge(geometry_t *output, geometry_t const &input)
 
             do {
                 auto &conn = conns[cur];
-                assert(conn.ls);
-                auto const &nl = *conn.ls;
+                assert(conn.linestring);
+                auto const &nl = *conn.linestring;
                 bool const forward = conn.left == prev;
                 prev = cur;
                 // add line
@@ -660,7 +707,7 @@ void line_merge(geometry_t *output, geometry_t const &input)
                     cur = conn.left;
                 }
                 // mark line as done
-                conns[prev].ls = nullptr;
+                conns[prev].linestring = nullptr;
                 ++done_ways;
             } while (cur != NOCONN);
         }
@@ -675,7 +722,7 @@ void line_merge(geometry_t *output, geometry_t const &input)
         // oh dear, there must be circular ways without an end
         // need to do the same shebang again
         for (std::size_t i = 0; i < todo_ways; ++i) {
-            if (!conns[i].ls) {
+            if (!conns[i].linestring) {
                 continue; // way already done
             }
 
@@ -686,12 +733,12 @@ void line_merge(geometry_t *output, geometry_t const &input)
 
                 do {
                     auto &conn = conns[cur];
-                    assert(conn.ls);
-                    auto const &nl = *conn.ls;
+                    assert(conn.linestring);
+                    auto const &nl = *conn.linestring;
                     bool const forward =
                         (conn.left == prev &&
-                         (!conns[conn.left].ls ||
-                          conns[conn.left].ls->back() == nl.front()));
+                         (!conns[conn.left].linestring ||
+                          conns[conn.left].linestring->back() == nl.front()));
                     prev = cur;
                     if (forward) {
                         // add line forwards
@@ -705,7 +752,7 @@ void line_merge(geometry_t *output, geometry_t const &input)
                         cur = conn.left;
                     }
                     // mark line as done
-                    conns[prev].ls = nullptr;
+                    conns[prev].linestring = nullptr;
                 } while (cur != i);
             }
 
@@ -728,6 +775,8 @@ geometry_t line_merge(geometry_t const &input)
 
 /****************************************************************************/
 
+namespace {
+
 /**
  * This helper function is used to calculate centroids of geometry collections.
  * It first creates a multi geometry that only contains the geometries of
@@ -740,7 +789,7 @@ geometry_t line_merge(geometry_t const &input)
  * Nested geometry collections are not allowed.
  */
 template <std::size_t N, typename T>
-static void filtered_centroid(collection_t const &collection, point_t *center)
+void filtered_centroid(collection_t const &collection, point_t *center)
 {
     multigeometry_t<T> multi;
     for (auto const &geom : collection) {
@@ -757,6 +806,8 @@ static void filtered_centroid(collection_t const &collection, point_t *center)
     }
     boost::geometry::centroid(multi, *center);
 }
+
+} // anonymous namespace
 
 geometry_t centroid(geometry_t const &geom)
 {
@@ -785,8 +836,9 @@ geometry_t centroid(geometry_t const &geom)
 
 /****************************************************************************/
 
-static bool simplify(linestring_t *output, linestring_t const &input,
-                     double tolerance)
+namespace {
+
+bool simplify(linestring_t *output, linestring_t const &input, double tolerance)
 {
     boost::geometry::simplify(input, *output, tolerance);
 
@@ -798,12 +850,12 @@ static bool simplify(linestring_t *output, linestring_t const &input,
     return output->size() > 1;
 }
 
-static bool simplify(multilinestring_t *output, multilinestring_t const &input,
-                     double tolerance)
+bool simplify(multilinestring_t *output, multilinestring_t const &input,
+              double tolerance)
 {
-    for (auto const &ls : input) {
+    for (auto const &linestring : input) {
         linestring_t simplified_ls;
-        if (simplify(&simplified_ls, ls, tolerance)) {
+        if (simplify(&simplified_ls, linestring, tolerance)) {
             output->add_geometry(std::move(simplified_ls));
         }
     }
@@ -811,10 +863,12 @@ static bool simplify(multilinestring_t *output, multilinestring_t const &input,
 }
 
 template <typename T>
-static bool simplify(T * /*output*/, T const & /*input*/, double /*tolerance*/)
+bool simplify(T * /*output*/, T const & /*input*/, double /*tolerance*/)
 {
     return false;
 }
+
+} // anonymous namespace
 
 void simplify(geometry_t *output, geometry_t const &input, double tolerance)
 {

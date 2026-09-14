@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -14,23 +14,27 @@
 #include "flex-lua-index.hpp"
 #include "flex-table.hpp"
 #include "lua-utils.hpp"
+#include "output-flex.hpp"
 #include "pgsql-capabilities.hpp"
+#include "projection.hpp"
+#include "util.hpp"
 
 #include <lua.hpp>
 
-static void check_tablespace(std::string const &tablespace)
+namespace {
+
+void check_tablespace(std::string const &tablespace)
 {
     if (!has_tablespace(tablespace)) {
-        throw fmt_error(
-            "Tablespace '{0}' not available."
-            " Use 'CREATE TABLESPACE \"{0}\" ...;' to create it.",
-            tablespace);
+        throw fmt_error("Tablespace '{0}' not available."
+                        " Use 'CREATE TABLESPACE \"{0}\" ...;' to create it.",
+                        tablespace);
     }
 }
 
-static flex_table_t &create_flex_table(lua_State *lua_state,
-                                       std::string const &default_schema,
-                                       std::vector<flex_table_t> *tables)
+flex_table_t &create_flex_table(lua_State *lua_state,
+                                std::string const &default_schema,
+                                std::vector<flex_table_t> *tables)
 {
     std::string const table_name =
         luaX_get_table_string(lua_state, "name", -1, "The table");
@@ -41,7 +45,8 @@ static flex_table_t &create_flex_table(lua_State *lua_state,
         throw fmt_error("Table with name '{}' already exists.", table_name);
     }
 
-    auto &new_table = tables->emplace_back(default_schema, table_name);
+    auto &new_table =
+        tables->emplace_back(default_schema, table_name, tables->size());
 
     lua_pop(lua_state, 1); // "name"
 
@@ -100,21 +105,26 @@ static flex_table_t &create_flex_table(lua_State *lua_state,
     return new_table;
 }
 
-static void parse_create_index(lua_State *lua_state, flex_table_t *table)
+void parse_create_index(lua_State *lua_state, flex_table_t *table)
 {
     std::string const create_index = luaX_get_table_string(
         lua_state, "create_index", -1, "The ids field", "auto");
     lua_pop(lua_state, 1); // "create_index"
     if (create_index == "always") {
         table->set_always_build_id_index();
+    } else if (create_index == "unique") {
+        table->set_always_build_id_index();
+        table->set_build_unique_id_index(false);
+    } else if (create_index == "primary_key") {
+        table->set_always_build_id_index();
+        table->set_build_unique_id_index(true);
     } else if (create_index != "auto") {
         throw fmt_error("Unknown value '{}' for 'create_index' field of ids",
                         create_index);
     }
 }
 
-static void setup_flex_table_id_columns(lua_State *lua_state,
-                                        flex_table_t *table)
+void setup_flex_table_id_columns(lua_State *lua_state, flex_table_t *table)
 {
     assert(lua_state);
     assert(table);
@@ -164,6 +174,17 @@ static void setup_flex_table_id_columns(lua_State *lua_state,
         throw fmt_error("Unknown ids type: {}.", type);
     }
 
+    bool const cache =
+        luaX_get_table_bool(lua_state, "cache", -1, "The ids", false);
+    lua_pop(lua_state, 1); // "cache"
+    if (cache) {
+        if (type == "node") {
+            table->enable_id_cache();
+        } else {
+            throw std::runtime_error{"ID cache only available for node ids."};
+        }
+    }
+
     std::string const name =
         luaX_get_table_string(lua_state, "id_column", -1, "The ids field");
     lua_pop(lua_state, 1); // "id_column"
@@ -176,8 +197,8 @@ static void setup_flex_table_id_columns(lua_State *lua_state,
     lua_pop(lua_state, 1); // "ids"
 }
 
-static std::size_t idx_from_userdata(lua_State *lua_state, int idx,
-                                     std::size_t expire_outputs_size)
+std::size_t idx_from_userdata(lua_State *lua_state, int idx,
+                              std::size_t expire_outputs_size)
 {
     void const *const user_data = lua_touserdata(lua_state, idx);
 
@@ -185,7 +206,7 @@ static std::size_t idx_from_userdata(lua_State *lua_state, int idx,
         throw std::runtime_error{"Expire output must be of type ExpireOutput."};
     }
 
-    luaL_getmetatable(lua_state, osm2pgsql_expire_output_name);
+    luaL_getmetatable(lua_state, OSM2PGSQL_EXPIRE_OUTPUT_CLASS);
     if (!lua_rawequal(lua_state, -1, -2)) {
         throw std::runtime_error{"Expire output must be of type ExpireOutput."};
     }
@@ -198,10 +219,10 @@ static std::size_t idx_from_userdata(lua_State *lua_state, int idx,
     return eo;
 }
 
-static void parse_and_set_expire_options(lua_State *lua_state,
-                                         flex_table_column_t *column,
-                                         std::size_t expire_outputs_size,
-                                         bool append_mode)
+void parse_and_set_expire_options(lua_State *lua_state,
+                                  flex_table_column_t *column,
+                                  std::size_t expire_outputs_size,
+                                  bool append_mode)
 {
     auto const type = lua_type(lua_state, -1);
 
@@ -209,7 +230,7 @@ static void parse_and_set_expire_options(lua_State *lua_state,
         return;
     }
 
-    if (!column->is_geometry_column() /* || column->srid() != 3857 */) {
+    if (!column->is_geometry_column() || column->srid() != PROJ_SPHERE_MERC) {
         throw std::runtime_error{"Expire only allowed for geometry"
                                  " columns in Web Mercator projection."};
     }
@@ -289,6 +310,15 @@ static void parse_and_set_expire_options(lua_State *lua_state,
         }
         lua_pop(lua_state, 1); // "buffer"
 
+        lua_getfield(lua_state, -1, "diff_expire");
+        if (lua_isboolean(lua_state, -1)) {
+            config.diff_expire = lua_toboolean(lua_state, -1);
+        } else if (!lua_isnil(lua_state, -1)) {
+            throw std::runtime_error{
+                "Optional expire field 'diff_expire' must contain a boolean."};
+        }
+        lua_pop(lua_state, 1); // "diff_expire"
+
         // Actually add the expire only if we are in append mode.
         if (append_mode) {
             column->add_expire(config);
@@ -296,10 +326,9 @@ static void parse_and_set_expire_options(lua_State *lua_state,
     });
 }
 
-static void
-setup_flex_table_columns(lua_State *lua_state, flex_table_t *table,
-                         std::vector<expire_output_t> *expire_outputs,
-                         bool append_mode)
+void setup_flex_table_columns(lua_State *lua_state, flex_table_t *table,
+                              std::vector<expire_output_t> *expire_outputs,
+                              bool append_mode)
 {
     assert(lua_state);
     assert(table);
@@ -341,12 +370,11 @@ setup_flex_table_columns(lua_State *lua_state, flex_table_t *table,
 
         lua_getfield(lua_state, -1, "projection");
         if (!lua_isnil(lua_state, -1)) {
-            if (column.is_geometry_column() ||
-                column.type() == table_column_type::area) {
+            if (column.is_geometry_column()) {
                 column.set_projection(lua_tostring(lua_state, -1));
             } else {
                 throw std::runtime_error{"Projection can only be set on "
-                                         "geometry and area columns."};
+                                         "geometry columns."};
             }
         }
         lua_pop(lua_state, 1); // "projection"
@@ -366,8 +394,8 @@ setup_flex_table_columns(lua_State *lua_state, flex_table_t *table,
     lua_pop(lua_state, 1); // "columns"
 }
 
-static void setup_flex_table_indexes(lua_State *lua_state, flex_table_t *table,
-                                     bool updatable)
+void setup_flex_table_indexes(lua_State *lua_state, flex_table_t *table,
+                              bool updatable)
 {
     assert(lua_state);
     assert(table);
@@ -410,6 +438,14 @@ static void setup_flex_table_indexes(lua_State *lua_state, flex_table_t *table,
     lua_pop(lua_state, 1); // "indexes"
 }
 
+TRAMPOLINE_WRAPPED_OBJECT(table, tostring)
+TRAMPOLINE_WRAPPED_OBJECT(table, cluster)
+TRAMPOLINE_WRAPPED_OBJECT(table, columns)
+TRAMPOLINE_WRAPPED_OBJECT(table, name)
+TRAMPOLINE_WRAPPED_OBJECT(table, schema)
+
+} // anonymous namespace
+
 int setup_flex_table(lua_State *lua_state, std::vector<flex_table_t> *tables,
                      std::vector<expire_output_t> *expire_outputs,
                      std::string const &default_schema, bool updatable,
@@ -429,8 +465,72 @@ int setup_flex_table(lua_State *lua_state, std::vector<flex_table_t> *tables,
     void *ptr = lua_newuserdata(lua_state, sizeof(std::size_t));
     auto *num = new (ptr) std::size_t{};
     *num = tables->size() - 1;
-    luaL_getmetatable(lua_state, osm2pgsql_table_name);
+    luaL_getmetatable(lua_state, OSM2PGSQL_TABLE_CLASS);
     lua_setmetatable(lua_state, -2);
 
+    return 1;
+}
+
+/**
+ * Define the osm2pgsql.Table class/metatable.
+ */
+void lua_wrapper_table_t::init(lua_State *lua_state)
+{
+    luaX_set_up_metatable(lua_state, "Table", OSM2PGSQL_TABLE_CLASS,
+                          {{"__tostring", lua_trampoline_table_tostring},
+                           {"insert", lua_trampoline_table_insert},
+                           {"in_id_cache", lua_trampoline_table_in_id_cache},
+                           {"name", lua_trampoline_table_name},
+                           {"schema", lua_trampoline_table_schema},
+                           {"cluster", lua_trampoline_table_cluster},
+                           {"columns", lua_trampoline_table_columns}});
+}
+
+int lua_wrapper_table_t::tostring() const
+{
+    std::string const str{fmt::format("osm2pgsql.Table[{}]", self().name())};
+    luaX_pushstring(lua_state(), str);
+
+    return 1;
+}
+
+int lua_wrapper_table_t::cluster() const noexcept
+{
+    lua_pushboolean(lua_state(), self().cluster_by_geom());
+    return 1;
+}
+
+int lua_wrapper_table_t::columns() const
+{
+    lua_createtable(lua_state(), (int)self().num_columns(), 0);
+
+    int n = 0;
+    for (auto const &column : self().columns()) {
+        lua_pushinteger(lua_state(), ++n);
+        lua_newtable(lua_state());
+
+        luaX_add_table_str(lua_state(), "name", column.name());
+        luaX_add_table_str(lua_state(), "type", column.type_name());
+        luaX_add_table_str(lua_state(), "sql_type", column.sql_type_name());
+        luaX_add_table_str(lua_state(), "sql_modifiers",
+                           column.sql_modifiers());
+        luaX_add_table_bool(lua_state(), "not_null", column.not_null());
+        luaX_add_table_bool(lua_state(), "create_only", column.create_only());
+
+        lua_rawset(lua_state(), -3);
+    }
+
+    return 1;
+}
+
+int lua_wrapper_table_t::name() const noexcept
+{
+    luaX_pushstring(lua_state(), self().name());
+    return 1;
+}
+
+int lua_wrapper_table_t::schema() const noexcept
+{
+    luaX_pushstring(lua_state(), self().schema());
     return 1;
 }

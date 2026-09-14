@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -26,6 +26,15 @@
  */
 
 namespace geom {
+
+/**
+ * Create a point geometry from a location. If the location is not valid,
+ * the output will not be changed.
+ *
+ * \param geom Pointer to an existing geometry which will be used as output.
+ * \param location The input location.
+ */
+void create_point(geometry_t *geom, osmium::Location const &location);
 
 /**
  * Create a point geometry from a node.
@@ -76,8 +85,10 @@ void create_linestring(geometry_t *geom, osmium::Way const &way);
  *
  * \param geom Pointer to an existing geometry which will be used as output.
  * \param way The input way.
+ * \param area_buffer Temporary buffer used to create area.
  */
-void create_polygon(geometry_t *geom, osmium::Way const &way);
+void create_polygon(geometry_t *geom, osmium::Way const &way,
+                    osmium::memory::Buffer *area_buffer);
 
 /**
  * Create a polygon geometry from a way.
@@ -85,9 +96,11 @@ void create_polygon(geometry_t *geom, osmium::Way const &way);
  * If the resulting polygon would be invalid, a null geometry is returned.
  *
  * \param way The input way.
+ * \param area_buffer Temporary buffer used to create area.
  * \returns The created geometry.
  */
-[[nodiscard]] geometry_t create_polygon(osmium::Way const &way);
+[[nodiscard]] geometry_t create_polygon(osmium::Way const &way,
+                                        osmium::memory::Buffer *area_buffer);
 
 /**
  * Create a multipoint geometry from a bunch of nodes (usually this would be
@@ -163,9 +176,11 @@ create_multilinestring(osmium::memory::Buffer const &buffer,
  * \param geom Pointer to an existing geometry which will be used as output.
  * \param relation The input relation.
  * \param buffer Buffer with OSM objects. Anything but ways are ignored.
+ * \param area_buffer Temporary buffer used to create area.
  */
 void create_multipolygon(geometry_t *geom, osmium::Relation const &relation,
-                         osmium::memory::Buffer const &buffer);
+                         osmium::memory::Buffer const &buffer,
+                         osmium::memory::Buffer *area_buffer);
 
 /**
  * Create a (multi)polygon geometry from a relation and member ways.
@@ -175,11 +190,13 @@ void create_multipolygon(geometry_t *geom, osmium::Relation const &relation,
  *
  * \param relation The input relation.
  * \param buffer Buffer with OSM objects. Anything but ways are ignored.
+ * \param area_buffer Temporary buffer used to create area.
  * \returns The created geometry.
  */
 [[nodiscard]] geometry_t
 create_multipolygon(osmium::Relation const &relation,
-                    osmium::memory::Buffer const &buffer);
+                    osmium::memory::Buffer const &buffer,
+                    osmium::memory::Buffer *area_buffer);
 
 /**
  * Create a geometry collection from nodes and ways, usually used for
@@ -192,8 +209,7 @@ create_multipolygon(osmium::Relation const &relation,
  * \param buffer Buffer with OSM objects. Nodes are turned into points,
  *               ways into linestrings, anything else in the buffer is ignored.
  */
-void create_collection(geometry_t *geom,
-                       osmium::memory::Buffer const &buffer);
+void create_collection(geometry_t *geom, osmium::memory::Buffer const &buffer);
 
 /**
  * Create a geometry collection from nodes and ways, usually used for

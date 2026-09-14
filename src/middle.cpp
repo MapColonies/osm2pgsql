@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -11,6 +11,10 @@
 #include "middle-ram.hpp"
 #include "middle.hpp"
 #include "options.hpp"
+
+middle_query_t::~middle_query_t() = default;
+
+middle_t::~middle_t() = default;
 
 std::shared_ptr<middle_t>
 create_middle(std::shared_ptr<thread_pool_t> thread_pool,

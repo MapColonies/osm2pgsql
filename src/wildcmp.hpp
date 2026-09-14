@@ -6,10 +6,10 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
-bool wildMatch(char const *wildCard, char const *string);
+bool wild_match(char const *expr, char const *str) noexcept;
 
 #endif // OSM2PGSQL_WILDCMP_HPP

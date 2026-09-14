@@ -3,12 +3,11 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "command-line-parser.hpp"
-#include "dependency-manager.hpp"
 #include "input.hpp"
 #include "logging.hpp"
 #include "middle.hpp"
@@ -17,25 +16,26 @@
 #include "output.hpp"
 #include "pgsql.hpp"
 #include "pgsql-capabilities.hpp"
-#include "pgsql-helper.hpp"
 #include "properties.hpp"
 #include "util.hpp"
 #include "version.hpp"
 
 #include <osmium/util/memory.hpp>
 
-#include <boost/filesystem.hpp>
-
 #include <exception>
+#include <filesystem>
 #include <memory>
+#include <string>
 #include <utility>
+
+namespace {
 
 /**
  * Output overall memory usage as debug message.
  *
  * This only works on Linux.
  */
-static void show_memory_usage()
+void show_memory_usage()
 {
     osmium::MemoryUsage const mem;
     if (mem.peak() != 0) {
@@ -44,7 +44,7 @@ static void show_memory_usage()
     }
 }
 
-static file_info run(options_t const &options)
+file_info run(options_t const &options, properties_t *properties)
 {
     auto const files = prepare_input_files(
         options.input_files, options.input_format, options.append);
@@ -57,18 +57,16 @@ static file_info run(options_t const &options)
     middle->start();
 
     auto output = output_t::create_output(middle->get_query_instance(),
-                                          thread_pool, options);
+                                          thread_pool, options, *properties);
 
     middle->set_requirements(output->get_requirements());
 
-    auto dependency_manager =
-        options.with_forward_dependencies
-            ? std::make_unique<full_dependency_manager_t>(middle)
-            : std::make_unique<dependency_manager_t>();
+    if (!options.append) {
+        properties->init_table();
+    }
+    properties->store();
 
-    osmdata_t osmdata{std::move(dependency_manager), middle, output, options};
-
-    osmdata.start();
+    osmdata_t osmdata{middle, output, options};
 
     // Processing: In this phase the input file(s) are read and parsed,
     // populating some of the tables.
@@ -84,19 +82,24 @@ static file_info run(options_t const &options)
     return finfo;
 }
 
-static void check_db(options_t const &options)
+void check_db(options_t const &options)
 {
-    pg_conn_t const db_connection{options.conninfo};
+    pg_conn_t const db_connection{options.connection_params, "check"};
 
     init_database_capabilities(db_connection);
+
+    auto const pv = get_postgis_version();
+    if (pv.major < 3) {
+        throw std::runtime_error{"Need at least PostGIS version 3.0"};
+    }
 
     check_schema(options.dbschema);
     check_schema(options.middle_dbschema);
     check_schema(options.output_dbschema);
 }
 
-// This is called in "create" mode to store properties into the database.
-static void store_properties(properties_t *properties, options_t const &options)
+// This is called in "create" mode to initialize properties.
+void set_up_properties(properties_t *properties, options_t const &options)
 {
     properties->set_bool("attributes", options.extra_attributes);
 
@@ -104,10 +107,9 @@ static void store_properties(properties_t *properties, options_t const &options)
         properties->set_string("flat_node_file", "");
     } else {
         properties->set_string(
-            "flat_node_file",
-            boost::filesystem::absolute(
-                boost::filesystem::path{options.flat_node_file})
-                .string());
+            "flat_node_file", std::filesystem::absolute(
+                                  std::filesystem::path{options.flat_node_file})
+                                  .string());
     }
 
     properties->set_string("prefix", options.prefix);
@@ -121,15 +123,12 @@ static void store_properties(properties_t *properties, options_t const &options)
     } else {
         properties->set_string(
             "style",
-            boost::filesystem::absolute(boost::filesystem::path{options.style})
+            std::filesystem::absolute(std::filesystem::path{options.style})
                 .string());
     }
-
-    properties->store();
 }
 
-static void store_data_properties(properties_t *properties,
-                                  file_info const &finfo)
+void store_data_properties(properties_t *properties, file_info const &finfo)
 {
     if (finfo.last_timestamp.valid()) {
         auto const timestamp = finfo.last_timestamp.to_iso();
@@ -143,11 +142,9 @@ static void store_data_properties(properties_t *properties,
             properties->set_string("replication_" + s, value);
         }
     }
-
-    properties->store();
 }
 
-static void check_updatable(properties_t const &properties)
+void check_updatable(properties_t const &properties)
 {
     if (properties.get_bool("updatable", false)) {
         return;
@@ -158,7 +155,7 @@ static void check_updatable(properties_t const &properties)
         " updatable database use --slim (without --drop)."};
 }
 
-static void check_attributes(properties_t const &properties, options_t *options)
+void check_attributes(properties_t const &properties, options_t *options)
 {
     bool const with_attributes = properties.get_bool("attributes", false);
 
@@ -177,8 +174,8 @@ static void check_attributes(properties_t const &properties, options_t *options)
     }
 }
 
-static void check_and_update_flat_node_file(properties_t *properties,
-                                            options_t *options)
+void check_and_update_flat_node_file(properties_t *properties,
+                                     options_t *options)
 {
     auto const flat_node_file_from_import =
         properties->get_string("flat_node_file", "");
@@ -191,9 +188,9 @@ static void check_and_update_flat_node_file(properties_t *properties,
                      flat_node_file_from_import);
         }
     } else {
-        const auto absolute_path =
-            boost::filesystem::absolute(
-                boost::filesystem::path{options->flat_node_file})
+        auto const absolute_path =
+            std::filesystem::absolute(
+                std::filesystem::path{options->flat_node_file})
                 .string();
 
         if (flat_node_file_from_import.empty()) {
@@ -210,12 +207,12 @@ static void check_and_update_flat_node_file(properties_t *properties,
                 "Using the flat node file you specified on the command line"
                 " ('{}') instead of the one used on import ('{}').",
                 absolute_path, flat_node_file_from_import);
-            properties->set_string("flat_node_file", absolute_path, true);
+            properties->set_string("flat_node_file", absolute_path);
         }
     }
 }
 
-static void check_prefix(properties_t const &properties, options_t *options)
+void check_prefix(properties_t const &properties, options_t *options)
 {
     auto const prefix = properties.get_string("prefix", "planet_osm");
     if (!options->prefix_is_set) {
@@ -231,32 +228,28 @@ static void check_prefix(properties_t const &properties, options_t *options)
     }
 }
 
-static void check_db_format(properties_t const &properties, options_t *options)
+void check_db_format(properties_t const &properties, options_t *options)
 {
     auto const format = properties.get_int("db_format", -1);
 
-    if (format == -1) {
-        // db_format not set, so this is a legacy import
-        return;
-    }
-
-    if (format == 0) {
+    if (format == 1) {
         throw std::runtime_error{
-            "This database is not updatable (db_format=0)."};
+            "Old database format detected. This version of osm2pgsql can not "
+            "read this any more. Downgrade osm2pgsql or reimport database."};
     }
 
-    if (format < -1 || format > 2) {
+    if (format != 2) {
         throw fmt_error("Unknown db_format '{}' in properties.", format);
     }
 
-    options->middle_database_format = format;
+    options->middle_database_format = static_cast<uint8_t>(format);
 }
 
-static void check_output(properties_t const &properties, options_t *options)
+void check_output(properties_t const &properties, options_t *options)
 {
     auto const output = properties.get_string("output", "pgsql");
 
-    if (!options->output_backend_set) {
+    if (options->output_backend.empty()) {
         options->output_backend = output;
         log_info("Using output '{}' (same as on import).", output);
         return;
@@ -271,8 +264,7 @@ static void check_output(properties_t const &properties, options_t *options)
                     options->output_backend, output);
 }
 
-static void check_and_update_style_file(properties_t *properties,
-                                        options_t *options)
+void check_and_update_style_file(properties_t *properties, options_t *options)
 {
     auto const style_file_from_import = properties->get_string("style", "");
 
@@ -287,8 +279,8 @@ static void check_and_update_style_file(properties_t *properties,
         throw std::runtime_error{"Style file from import is empty!?"};
     }
 
-    const auto absolute_path =
-        boost::filesystem::absolute(boost::filesystem::path{options->style})
+    auto const absolute_path =
+        std::filesystem::absolute(std::filesystem::path{options->style})
             .string();
 
     if (absolute_path == style_file_from_import) {
@@ -300,13 +292,12 @@ static void check_and_update_style_file(properties_t *properties,
     log_info("Using the style file you specified on the command line"
              " ('{}') instead of the one used on import ('{}').",
              absolute_path, style_file_from_import);
-    properties->set_string("style", absolute_path, true);
+    properties->set_string("style", absolute_path);
 }
 
 // This is called in "append" mode to check that the command line options are
 // compatible with the properties stored in the database.
-static void check_and_update_properties(properties_t *properties,
-                                        options_t *options)
+void check_and_update_properties(properties_t *properties, options_t *options)
 {
     check_updatable(*properties);
     check_attributes(*properties, options);
@@ -317,28 +308,14 @@ static void check_and_update_properties(properties_t *properties,
     check_and_update_style_file(properties, options);
 }
 
-// If we are in append mode and the middle nodes table isn't there, it probably
-// means we used a flat node store when we created this database. Check for
-// that and stop if it looks like we are missing the node location store
-// option. (This function is only used in legacy systems which don't have the
-// properties stored in the database.)
-static void check_for_nodes_table(options_t const &options)
+void set_option_defaults(options_t *options)
 {
-    if (!options.flat_node_file.empty()) {
-        return;
+    if (options->output_backend.empty()) {
+        options->output_backend = "pgsql";
     }
 
-    if (!has_table(options.middle_dbschema, options.prefix + "_nodes")) {
-        throw std::runtime_error{"You seem to not have a nodes table. Did "
-                                 "you forget the --flat-nodes option?"};
-    }
-}
-
-static void check_and_set_style(options_t *options)
-{
-    if (!options->style_set) {
-        if (options->output_backend == "flex" ||
-            options->output_backend == "gazetteer") {
+    if (options->style.empty()) {
+        if (options->output_backend == "flex") {
             throw std::runtime_error{"You have to set the config file "
                                      "with the -S|--style option."};
         }
@@ -348,12 +325,12 @@ static void check_and_set_style(options_t *options)
     }
 }
 
+} // anonymous namespace
+
 // NOLINTNEXTLINE(bugprone-exception-escape)
 int main(int argc, char *argv[])
 {
     try {
-        log_info("osm2pgsql version {}", get_osm2pgsql_version());
-
         auto options = parse_command_line(argc, argv);
 
         if (options.command == command_t::help) {
@@ -362,7 +339,7 @@ int main(int argc, char *argv[])
         }
 
         if (options.command == command_t::version) {
-            print_version();
+            print_version("osm2pgsql");
             return 0;
         }
 
@@ -370,16 +347,20 @@ int main(int argc, char *argv[])
 
         check_db(options);
 
-        properties_t properties{options.conninfo, options.middle_dbschema};
+        properties_t properties{options.connection_params,
+                                options.middle_dbschema};
+
         if (options.append) {
-            if (properties.load()) {
-                check_and_update_properties(&properties, &options);
-            } else {
-                check_and_set_style(&options);
-                check_for_nodes_table(options);
+            if (!properties.load()) {
+                throw std::runtime_error{
+                    "Did not find table 'osm2pgsql_properties' in database. "
+                    "Database too old? Wrong schema?"};
             }
 
-            auto const finfo = run(options);
+            check_and_update_properties(&properties, &options);
+            properties.store();
+
+            auto const finfo = run(options, &properties);
 
             if (finfo.last_timestamp.valid()) {
                 auto const current_timestamp =
@@ -389,15 +370,17 @@ int main(int argc, char *argv[])
                     (finfo.last_timestamp >
                      osmium::Timestamp{current_timestamp})) {
                     properties.set_string("current_timestamp",
-                                          finfo.last_timestamp.to_iso(), true);
+                                          finfo.last_timestamp.to_iso());
                 }
             }
         } else {
-            check_and_set_style(&options);
-            store_properties(&properties, options);
-            auto const finfo = run(options);
+            set_option_defaults(&options);
+            set_up_properties(&properties, options);
+            auto const finfo = run(options, &properties);
             store_data_properties(&properties, finfo);
         }
+
+        properties.store();
 
         show_memory_usage();
         log_info("osm2pgsql took {} overall.",

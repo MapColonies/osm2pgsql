@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -14,13 +14,18 @@
 #include "flex-index.hpp"
 #include "flex-table-column.hpp"
 #include "pgsql.hpp"
+#include "projection.hpp"
 #include "reprojection.hpp"
 #include "thread-pool.hpp"
 #include "util.hpp"
 
 #include <osmium/osm/item_type.hpp>
 
+#include <cassert>
+#include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <future>
 #include <limits>
 #include <memory>
 #include <string>
@@ -32,12 +37,13 @@
  * output. This is not a real primary key, because the values are not
  * necessarily unique.
  */
-enum class flex_table_index_type {
+enum class flex_table_index_type : uint8_t
+{
     no_index,
-    node, // index by node id
-    way, // index by way id
-    relation, // index by relation id
-    area, // index by way (positive) or relation (negative) id
+    node,       // index by node id
+    way,        // index by way id
+    relation,   // index by relation id
+    area,       // index by way (positive) or relation (negative) id
     any_object, // any OSM object, two columns for type and id
     tile // index by tile with x and y columns (used for generalized data)
 };
@@ -49,18 +55,18 @@ class flex_table_t
 {
 
 public:
-
     /**
      * Table creation type: interim tables are created as UNLOGGED and with
      * autovacuum disabled.
      */
-    enum class table_type {
+    enum class table_type : uint8_t
+    {
         interim,
         permanent
     };
 
-    flex_table_t(std::string schema, std::string name)
-    : m_schema(std::move(schema)), m_name(std::move(name))
+    flex_table_t(std::string schema, std::string name, std::size_t num)
+    : m_schema(std::move(schema)), m_name(std::move(name)), m_table_num(num)
     {
     }
 
@@ -111,14 +117,9 @@ public:
 
     std::size_t num_columns() const noexcept { return m_columns.size(); }
 
-    std::vector<flex_table_column_t>::const_iterator begin() const noexcept
+    std::vector<flex_table_column_t> const &columns() const noexcept
     {
-        return m_columns.begin();
-    }
-
-    std::vector<flex_table_column_t>::const_iterator end() const noexcept
-    {
-        return m_columns.end();
+        return m_columns;
     }
 
     flex_table_column_t *find_column_by_name(std::string const &name)
@@ -146,7 +147,7 @@ public:
 
     int srid() const noexcept
     {
-        return has_geom_column() ? geom_column().srid() : 4326;
+        return has_geom_column() ? geom_column().srid() : PROJ_LATLONG;
     }
 
     std::string build_sql_prepare_get_wkb() const;
@@ -195,7 +196,28 @@ public:
         return m_always_build_id_index;
     }
 
+    void set_build_unique_id_index(bool as_primary_key) noexcept
+    {
+        m_build_unique_id_index = true;
+        m_primary_key_index = as_primary_key;
+    }
+
+    bool build_unique_id_index() const noexcept
+    {
+        return m_build_unique_id_index;
+    }
+
     bool has_columns_with_expire() const noexcept;
+
+    std::size_t num() const noexcept { return m_table_num; }
+
+    void prepare(pg_conn_t const &db_connection) const;
+
+    void analyze(pg_conn_t const &db_connection) const;
+
+    void enable_id_cache() noexcept;
+
+    bool with_id_cache() const noexcept;
 
 private:
     /// The schema this table is in
@@ -230,6 +252,9 @@ private:
      */
     std::size_t m_geom_column = std::numeric_limits<std::size_t>::max();
 
+    /// Unique number for each table.
+    std::size_t m_table_num;
+
     /**
      * Type of id stored in this table.
      */
@@ -244,6 +269,15 @@ private:
     /// Always build the id index, not only when it is needed for updates?
     bool m_always_build_id_index = false;
 
+    /// Build the index as a unique index.
+    bool m_build_unique_id_index = false;
+
+    /// Index should be a primary key.
+    bool m_primary_key_index = false;
+
+    /// Do we want an ID cache for this table?
+    bool m_with_id_cache = false;
+
 }; // class flex_table_t
 
 class table_connection_t
@@ -251,35 +285,28 @@ class table_connection_t
 public:
     table_connection_t(flex_table_t *table,
                        std::shared_ptr<db_copy_thread_t> const &copy_thread)
-    : m_proj(reprojection::create_projection(table->srid())), m_table(table),
+    : m_proj(reprojection_t::create_projection(table->srid())), m_table(table),
       m_target(std::make_shared<db_target_descr_t>(
           table->schema(), table->name(), table->id_column_names(),
           table->build_sql_column_list())),
-      m_copy_mgr(copy_thread), m_db_connection(nullptr)
+      m_copy_mgr(copy_thread)
     {
     }
 
-    void connect(std::string const &conninfo);
+    void start(pg_conn_t const &db_connection, bool append) const;
 
-    void start(bool append);
-
-    void stop(bool updateable, bool append);
+    void stop(pg_conn_t const &db_connection, bool updateable, bool append);
 
     flex_table_t const &table() const noexcept { return *m_table; }
 
-    void teardown() { m_db_connection.reset(); }
-
-    void prepare();
-
-    void analyze();
-
-    void create_id_index();
+    void create_id_index(pg_conn_t const &db_connection);
 
     /**
      * Get all geometries that have at least one expire config defined
      * from the database and return the result set.
      */
-    pg_result_t get_geoms_by_id(osmium::item_type type, osmid_t id) const;
+    pg_result_t get_geoms_by_id(pg_conn_t const &db_connection,
+                                osmium::item_type type, osmid_t id) const;
 
     void flush() { m_copy_mgr.flush(); }
 
@@ -294,7 +321,7 @@ public:
 
     void delete_rows_with(osmium::item_type type, osmid_t id);
 
-    reprojection const &proj() const noexcept
+    reprojection_t const &proj() const noexcept
     {
         assert(m_proj);
         return *m_proj;
@@ -315,7 +342,7 @@ public:
     }
 
 private:
-    std::shared_ptr<reprojection> m_proj;
+    std::shared_ptr<reprojection_t> m_proj;
 
     flex_table_t *m_table;
 
@@ -326,9 +353,6 @@ private:
      * to the database server.
      */
     db_copy_mgr_t<db_deleter_by_type_and_id_t> m_copy_mgr;
-
-    /// The connection to the database server.
-    std::unique_ptr<pg_conn_t> m_db_connection;
 
     task_result_t m_task_result;
 

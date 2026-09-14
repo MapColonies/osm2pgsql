@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -15,11 +15,7 @@
  * emit the final geometry-enabled output formats
 */
 
-#include <future>
-#include <iostream>
-#include <limits>
 #include <memory>
-#include <stdexcept>
 #include <string>
 
 #include <cassert>
@@ -37,42 +33,74 @@
 #include "options.hpp"
 #include "osmtypes.hpp"
 #include "output-pgsql.hpp"
-#include "pgsql.hpp"
+#include "projection.hpp"
 #include "reprojection.hpp"
 #include "taginfo-impl.hpp"
 #include "tagtransform.hpp"
 #include "util.hpp"
-#include "wildcmp.hpp"
 #include "wkb.hpp"
 
-static double calculate_area(bool reproject_area,
-                             geom::geometry_t const &geom4326,
-                             geom::geometry_t const &geom)
+namespace {
+
+double calculate_area(bool reproject_area, geom::geometry_t const &geom4326,
+                      geom::geometry_t const &projected_geom)
 {
     static thread_local auto const proj3857 =
-        reprojection::create_projection(3857);
+        reprojection_t::create_projection(PROJ_SPHERE_MERC);
 
     if (reproject_area) {
         auto const ogeom = geom::transform(geom4326, *proj3857);
         return geom::area(ogeom);
     }
-    return geom::area(geom);
+    return geom::area(projected_geom);
 }
+
+// The roles of all available member ways of a relation are available in the
+// Lua "filter_tags_relation_member" callback function. This function extracts
+// the roles from all ways in the buffer and returns the list.
+rolelist_t get_rolelist(osmium::Relation const &rel,
+                        osmium::memory::Buffer const &buffer)
+{
+    rolelist_t roles;
+
+    auto it = buffer.select<osmium::Way>().cbegin();
+    auto const end = buffer.select<osmium::Way>().cend();
+
+    if (it == end) {
+        return roles;
+    }
+
+    for (auto const &member : rel.members()) {
+        if (member.type() == osmium::item_type::way &&
+            member.ref() == it->id()) {
+            roles.emplace_back(member.role());
+            ++it;
+            if (it == end) {
+                break;
+            }
+        }
+    }
+
+    return roles;
+}
+
+} // anonymous namespace
 
 void output_pgsql_t::pgsql_out_way(osmium::Way const &way, taglist_t *tags,
                                    bool polygon, bool roads)
 {
     if (polygon && !way.nodes().empty() && way.is_closed()) {
-        auto const geom = geom::create_polygon(way);
+        auto const geom = geom::create_polygon(way, &m_area_buffer);
         auto const projected_geom = geom::transform(geom, *m_proj);
 
         auto const wkb = geom_to_ewkb(projected_geom);
         if (!wkb.empty()) {
-            m_expire.from_geometry(projected_geom, m_expire_config);
+            m_expire.from_geometry_if_3857(projected_geom, m_expire_config);
+            m_expire.commit_tiles(&m_expire_output);
             if (m_enable_way_area) {
                 double const area = calculate_area(
                     get_options()->reproject_area, geom, projected_geom);
-                util::double_to_buffer const tmp{area};
+                util::double_to_buffer_t const tmp{area};
                 tags->set("way_area", tmp.c_str());
             }
             m_tables[t_poly]->write_row(way.id(), *tags, wkb);
@@ -83,7 +111,8 @@ void output_pgsql_t::pgsql_out_way(osmium::Way const &way, taglist_t *tags,
         auto const geoms = geom::split_multi(geom::segmentize(
             geom::transform(geom::create_linestring(way), *m_proj), split_at));
         for (auto const &sgeom : geoms) {
-            m_expire.from_geometry(sgeom, m_expire_config);
+            m_expire.from_geometry_if_3857(sgeom, m_expire_config);
+            m_expire.commit_tiles(&m_expire_output);
             auto const wkb = geom_to_ewkb(sgeom);
             m_tables[t_line]->write_row(way.id(), *tags, wkb);
             if (roads) {
@@ -147,12 +176,7 @@ void output_pgsql_t::stop()
     }
 
     if (get_options()->expire_tiles_zoom_min > 0) {
-        expire_output_t expire_out;
-        expire_out.set_filename(get_options()->expire_tiles_filename);
-        expire_out.set_minzoom(get_options()->expire_tiles_zoom_min);
-        expire_out.set_maxzoom(get_options()->expire_tiles_zoom);
-        auto const count =
-            expire_out.output_tiles_to_file(m_expire.get_tiles());
+        auto const count = m_expire_output.output(connection_params_t{});
         log_info("Wrote {} entries to expired tiles list", count);
     }
 }
@@ -174,19 +198,28 @@ void output_pgsql_t::wait()
 
 void output_pgsql_t::node_add(osmium::Node const &node)
 {
+    if (m_ignore_untagged_objects && node.tags().empty()) {
+        return;
+    }
+
     taglist_t outtags;
     if (m_tagtransform->filter_tags(node, nullptr, nullptr, &outtags)) {
         return;
     }
 
     auto const geom = geom::transform(geom::create_point(node), *m_proj);
-    m_expire.from_geometry(geom, m_expire_config);
+    m_expire.from_geometry_if_3857(geom, m_expire_config);
+    m_expire.commit_tiles(&m_expire_output);
     auto const wkb = geom_to_ewkb(geom);
     m_tables[t_point]->write_row(node.id(), outtags, wkb);
 }
 
 void output_pgsql_t::way_add(osmium::Way *way)
 {
+    if (m_ignore_untagged_objects && way->tags().empty()) {
+        return;
+    }
+
     bool polygon = false;
     bool roads = false;
     taglist_t outtags;
@@ -201,35 +234,6 @@ void output_pgsql_t::way_add(osmium::Way *way)
             pgsql_out_way(*way, &outtags, polygon, roads);
         }
     }
-}
-
-// The roles of all available member ways of a relation are available in the
-// Lua "filter_tags_relation_member" callback function. This function extracts
-// the roles from all ways in the buffer and returns the list.
-static rolelist_t get_rolelist(osmium::Relation const &rel,
-                               osmium::memory::Buffer const &buffer)
-{
-    rolelist_t roles;
-
-    auto it = buffer.select<osmium::Way>().cbegin();
-    auto const end = buffer.select<osmium::Way>().cend();
-
-    if (it == end) {
-        return roles;
-    }
-
-    for (auto const &member : rel.members()) {
-        if (member.type() == osmium::item_type::way &&
-            member.ref() == it->id()) {
-            roles.emplace_back(member.role());
-            ++it;
-            if (it == end) {
-                break;
-            }
-        }
-    }
-
-    return roles;
 }
 
 /* This is the workhorse of pgsql_add_relation, split out because it is used as the callback for iterate relations */
@@ -283,7 +287,8 @@ void output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel)
         }
         auto const geoms = geom::split_multi(std::move(projected_geom));
         for (auto const &sgeom : geoms) {
-            m_expire.from_geometry(sgeom, m_expire_config);
+            m_expire.from_geometry_if_3857(sgeom, m_expire_config);
+            m_expire.commit_tiles(&m_expire_output);
             auto const wkb = geom_to_ewkb(sgeom);
             m_tables[t_line]->write_row(-rel.id(), outtags, wkb);
             if (roads) {
@@ -294,17 +299,18 @@ void output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel)
 
     // multipolygons and boundaries
     if (make_boundary || make_polygon) {
-        auto const geoms =
-            geom::split_multi(geom::create_multipolygon(rel, m_buffer),
-                              !get_options()->enable_multi);
+        auto const geoms = geom::split_multi(
+            geom::create_multipolygon(rel, m_buffer, &m_area_buffer),
+            !get_options()->enable_multi);
         for (auto const &sgeom : geoms) {
             auto const projected_geom = geom::transform(sgeom, *m_proj);
-            m_expire.from_geometry(projected_geom, m_expire_config);
+            m_expire.from_geometry_if_3857(projected_geom, m_expire_config);
+            m_expire.commit_tiles(&m_expire_output);
             auto const wkb = geom_to_ewkb(projected_geom);
             if (m_enable_way_area) {
                 double const area = calculate_area(
                     get_options()->reproject_area, sgeom, projected_geom);
-                util::double_to_buffer const tmp{area};
+                util::double_to_buffer_t const tmp{area};
                 outtags.set("way_area", tmp.c_str());
             }
             m_tables[t_poly]->write_row(-rel.id(), outtags, wkb);
@@ -314,6 +320,10 @@ void output_pgsql_t::pgsql_process_relation(osmium::Relation const &rel)
 
 void output_pgsql_t::relation_add(osmium::Relation const &rel)
 {
+    if (m_ignore_untagged_objects && rel.tags().empty()) {
+        return;
+    }
+
     char const *const type = rel.tags()["type"];
 
     /* Must have a type field or we ignore it */
@@ -334,15 +344,15 @@ void output_pgsql_t::relation_add(osmium::Relation const &rel)
 /* Delete is easy, just remove all traces of this object. We don't need to
  * worry about finding objects that depend on it, since the same diff must
  * contain the change for that also. */
-void output_pgsql_t::node_delete(osmid_t osm_id)
+void output_pgsql_t::node_delete(osmium::Node const &node)
 {
     if (m_expire.enabled()) {
-        auto const results = m_tables[t_point]->get_wkb(osm_id);
+        auto const results = m_tables[t_point]->get_wkb(node.id());
         if (expire_from_result(&m_expire, results, m_expire_config) != 0) {
-            m_tables[t_point]->delete_row(osm_id);
+            m_tables[t_point]->delete_row(node.id());
         }
     } else {
-        m_tables[t_point]->delete_row(osm_id);
+        m_tables[t_point]->delete_row(node.id());
     }
 }
 
@@ -350,7 +360,7 @@ void output_pgsql_t::delete_from_output_and_expire(osmid_t id)
 {
     m_tables[t_roads]->delete_row(id);
 
-    for (auto table : {t_line, t_poly}) {
+    for (auto const table : {t_line, t_poly}) {
         if (m_expire.enabled()) {
             auto const results = m_tables.at(table)->get_wkb(id);
             if (expire_from_result(&m_expire, results, m_expire_config) != 0) {
@@ -377,9 +387,9 @@ void output_pgsql_t::pgsql_delete_way_from_output(osmid_t osm_id)
     delete_from_output_and_expire(osm_id);
 }
 
-void output_pgsql_t::way_delete(osmid_t osm_id)
+void output_pgsql_t::way_delete(osmium::Way *way)
 {
-    pgsql_delete_way_from_output(osm_id);
+    pgsql_delete_way_from_output(way->id());
 }
 
 /* Relations are identified by using negative IDs */
@@ -388,9 +398,9 @@ void output_pgsql_t::pgsql_delete_relation_from_output(osmid_t osm_id)
     delete_from_output_and_expire(-osm_id);
 }
 
-void output_pgsql_t::relation_delete(osmid_t osm_id)
+void output_pgsql_t::relation_delete(osmium::Relation const &rel)
 {
-    pgsql_delete_relation_from_output(osm_id);
+    pgsql_delete_relation_from_output(rel.id());
 }
 
 /* Modify is slightly trickier. The basic idea is we simply delete the
@@ -398,19 +408,19 @@ void output_pgsql_t::relation_delete(osmid_t osm_id)
  * objects that depend on this one */
 void output_pgsql_t::node_modify(osmium::Node const &node)
 {
-    node_delete(node.id());
+    node_delete(node);
     node_add(node);
 }
 
 void output_pgsql_t::way_modify(osmium::Way *way)
 {
-    way_delete(way->id());
+    way_delete(way);
     way_add(way);
 }
 
 void output_pgsql_t::relation_modify(osmium::Relation const &rel)
 {
-    relation_delete(rel.id());
+    relation_delete(rel);
     relation_add(rel);
 }
 
@@ -418,7 +428,8 @@ void output_pgsql_t::start()
 {
     for (auto &t : m_tables) {
         //setup the table in postgres
-        t->start(get_options()->conninfo, get_options()->tblsmain_data);
+        t->start(get_options()->connection_params,
+                 get_options()->tblsmain_data);
     }
 }
 
@@ -432,11 +443,22 @@ std::shared_ptr<output_t> output_pgsql_t::clone(
 output_pgsql_t::output_pgsql_t(std::shared_ptr<middle_query_t> const &mid,
                                std::shared_ptr<thread_pool_t> thread_pool,
                                options_t const &options)
-: output_t(mid, std::move(thread_pool), options), m_proj(options.projection),
+: output_t(mid, std::move(thread_pool), options),
+  m_ignore_untagged_objects(!options.extra_attributes),
+  m_proj(options.projection),
   m_expire(options.expire_tiles_zoom, options.projection),
   m_buffer(32768, osmium::memory::Buffer::auto_grow::yes),
-  m_rels_buffer(1024, osmium::memory::Buffer::auto_grow::yes)
+  m_rels_buffer(1024, osmium::memory::Buffer::auto_grow::yes),
+  m_area_buffer(1024, osmium::memory::Buffer::auto_grow::yes)
 {
+    log_warn("The pgsql (default) output is deprecated. For details see "
+             "https://osm2pgsql.org/doc/"
+             "faq.html#the-pgsql-output-is-deprecated-what-does-that-mean");
+
+    m_expire_output.set_filename(options.expire_tiles_filename);
+    m_expire_output.set_minzoom(options.expire_tiles_zoom_min);
+    m_expire_output.set_maxzoom(options.expire_tiles_zoom);
+
     m_expire_config.full_area_limit = get_options()->expire_tiles_max_bbox;
     if (get_options()->expire_tiles_max_bbox > 0.0) {
         m_expire_config.mode = expire_mode::hybrid;
@@ -445,13 +467,14 @@ output_pgsql_t::output_pgsql_t(std::shared_ptr<middle_query_t> const &mid,
     log_debug("Using projection SRS {} ({})", options.projection->target_srs(),
               options.projection->target_desc());
 
-    export_list exlist;
+    export_list_t exlist;
 
     m_enable_way_area = read_style_file(options.style, &exlist);
 
     m_tagtransform = tagtransform_t::make_tagtransform(&options, exlist);
 
-    auto copy_thread = std::make_shared<db_copy_thread_t>(options.conninfo);
+    auto copy_thread =
+        std::make_shared<db_copy_thread_t>(options.connection_params);
 
     //for each table
     for (std::size_t i = 0; i < m_tables.size(); ++i) {
@@ -497,10 +520,13 @@ output_pgsql_t::output_pgsql_t(
     std::shared_ptr<db_copy_thread_t> const &copy_thread)
 : output_t(other, mid), m_tagtransform(other->m_tagtransform->clone()),
   m_enable_way_area(other->m_enable_way_area),
+  m_ignore_untagged_objects(other->m_ignore_untagged_objects),
   m_proj(get_options()->projection), m_expire_config(other->m_expire_config),
+  m_expire_output(other->m_expire_output),
   m_expire(get_options()->expire_tiles_zoom, get_options()->projection),
   m_buffer(1024, osmium::memory::Buffer::auto_grow::yes),
-  m_rels_buffer(1024, osmium::memory::Buffer::auto_grow::yes)
+  m_rels_buffer(1024, osmium::memory::Buffer::auto_grow::yes),
+  m_area_buffer(1024, osmium::memory::Buffer::auto_grow::yes)
 {
     for (std::size_t i = 0; i < m_tables.size(); ++i) {
         //copy constructor will just connect to the already there table
@@ -510,11 +536,3 @@ output_pgsql_t::output_pgsql_t(
 }
 
 output_pgsql_t::~output_pgsql_t() = default;
-
-void output_pgsql_t::merge_expire_trees(output_t *other)
-{
-    auto *const opgsql = dynamic_cast<output_pgsql_t *>(other);
-    if (opgsql) {
-        m_expire.merge_and_destroy(&opgsql->m_expire);
-    }
-}

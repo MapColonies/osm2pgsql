@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,6 +12,8 @@
 #include "lua-utils.hpp"
 
 #include <lua.hpp>
+
+namespace {
 
 // Run the Lua code in "code" and then execute the function "func".
 template <typename FUNC>
@@ -24,6 +26,8 @@ void test_lua(lua_State *lua_state, char const *code, FUNC&& func) {
     lua_pop(lua_state, 1); // result from executing the Lua code
     REQUIRE(lua_gettop(lua_state) == 0);
 }
+
+} // anonymous namespace
 
 TEST_CASE("check luaX_is_empty_table", "[NoDB]")
 {
@@ -89,7 +93,7 @@ TEST_CASE("luaX_for_each should call function n times", "[NoDB]")
         luaL_newstate(), [](lua_State *state) { lua_close(state); }};
 
     test_lua(lua_state.get(), "return { 3, 4, 5 }", [&](){
-        int sum = 0;
+        lua_Number sum = 0;
         luaX_for_each(lua_state.get(), [&]() {
             sum += lua_tonumber(lua_state.get(), -1);
         });

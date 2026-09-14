@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -11,10 +11,9 @@
 
 #include "reprojection.hpp"
 
-std::shared_ptr<reprojection> reprojection::make_generic_projection(int)
+std::shared_ptr<reprojection_t> reprojection_t::make_generic_projection(int)
 {
     throw std::runtime_error{"No generic projection library available."};
 }
 
 std::string get_proj_version() { return "[disabled]"; }
-

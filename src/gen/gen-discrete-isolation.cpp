@@ -3,22 +3,24 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "gen-discrete-isolation.hpp"
 
-#include "logging.hpp"
 #include "params.hpp"
 #include "pgsql.hpp"
 #include "util.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <vector>
 
-gen_di_t::gen_di_t(pg_conn_t *connection, params_t *params)
-: gen_base_t(connection, params), m_timer_get(add_timer("get")),
+gen_di_t::gen_di_t(pg_conn_t *connection, bool append, params_t *params)
+: gen_base_t(connection, append, params), m_timer_get(add_timer("get")),
   m_timer_sort(add_timer("sort")), m_timer_di(add_timer("di")),
   m_timer_reorder(add_timer("reorder")), m_timer_write(add_timer("write"))
 {
@@ -111,11 +113,9 @@ FROM {src} WHERE {importance_column} > 0
                 double const dx = coords[m].first - coords[n].first;
                 double const dy = coords[m].second - coords[n].second;
                 double const dist = dx * dx + dy * dy;
-                if (dist < min) {
-                    min = dist;
-                }
+                min = std::min(dist, min);
             }
-            data[n].di = sqrt(min);
+            data[n].di = std::sqrt(min);
         }
         data[0].di = data[1].di + 1;
     }
@@ -130,9 +130,9 @@ FROM {src} WHERE {importance_column} > 0
     timer(m_timer_reorder).stop();
 
     log_gen("Writing results to destination table...");
-    dbexec("PREPARE update (int, real, int4, int8) AS"
-           " UPDATE {src} SET dirank = $1, discr_iso = $2, irank = $3"
-           " WHERE {id_column} = $4");
+    dbprepare("update", "UPDATE {src} SET dirank = $1::int,"
+                        " discr_iso = $2::real, irank = $3::int4"
+                        " WHERE {id_column} = $4::int8");
 
     timer(m_timer_write).start();
     connection().exec("BEGIN");
@@ -143,7 +143,9 @@ FROM {src} WHERE {importance_column} > 0
     connection().exec("COMMIT");
     timer(m_timer_write).stop();
 
-    dbexec("ANALYZE {src}");
+    if (!append_mode()) {
+        dbexec("ANALYZE {src}");
+    }
 
     log_gen("Done.");
 }

@@ -6,6 +6,8 @@ Feature: Tests for the osm2pgsql-replication script with property table
             n34 Tamenity=restaurant x77 y45.3
             """
         And the replication service at http://example.com/europe/liechtenstein-updates
+            | sequence | timestamp            |
+            | 9999999  | 2013-08-03T19:00:02Z |
         When running osm2pgsql pgsql with parameters
             | --slim |
 
@@ -22,6 +24,8 @@ Feature: Tests for the osm2pgsql-replication script with property table
     Scenario: Replication will be initialised from the information of the import file
         Given the input file 'liechtenstein-2013-08-03.osm.pbf'
         And the replication service at http://example.com/europe/liechtenstein-updates
+            | sequence | timestamp            |
+            | 9999999  | 2013-08-03T19:00:02Z |
         When running osm2pgsql pgsql with parameters
             | --slim |
 
@@ -40,11 +44,13 @@ Feature: Tests for the osm2pgsql-replication script with property table
             """
             n34 Tamenity=restaurant x77 y45.3
             """
+        And the replication service at http://example.com/europe/liechtenstein-updates
         When running osm2pgsql pgsql with parameters
             | --slim |
 
-        Then running osm2pgsql-replication fails with returncode 1
+        When running osm2pgsql-replication
             | init |
+        Then execution fails with return code 1
         And the error output contains
             """
             Cannot get timestamp from database.
@@ -52,10 +58,12 @@ Feature: Tests for the osm2pgsql-replication script with property table
 
     Scenario: Replication cannot initialised on non-updatable database
         Given the input file 'liechtenstein-2013-08-03.osm.pbf'
+        And the replication service at http://example.com/europe/liechtenstein-updates
         When running osm2pgsql pgsql
 
-        Then running osm2pgsql-replication fails with returncode 1
+        When running osm2pgsql-replication
             | init |
+        Then execution fails with return code 1
         And the error output contains
             """
             Database needs to be imported in --slim mode.
@@ -65,6 +73,8 @@ Feature: Tests for the osm2pgsql-replication script with property table
         Given the database schema foobar
         Given the input file 'liechtenstein-2013-08-03.osm.pbf'
         And the replication service at http://example.com/europe/liechtenstein-updates
+            | sequence | timestamp            |
+            | 9999999  | 2013-08-03T19:00:02Z |
         When running osm2pgsql pgsql with parameters
             | --slim | --middle-schema=foobar |
 
@@ -82,6 +92,8 @@ Feature: Tests for the osm2pgsql-replication script with property table
         Given the database schema foobar
         Given the input file 'liechtenstein-2013-08-03.osm.pbf'
         And the replication service at http://example.com/europe/liechtenstein-updates
+            | sequence | timestamp            |
+            | 9999999  | 2013-08-03T19:00:02Z |
         When running osm2pgsql pgsql with parameters
             | --slim | --schema=foobar |
 
@@ -100,6 +112,8 @@ Feature: Tests for the osm2pgsql-replication script with property table
         Given the database schema baz
         Given the input file 'liechtenstein-2013-08-03.osm.pbf'
         And the replication service at http://example.com/europe/liechtenstein-updates
+            | sequence | timestamp            |
+            | 9999999  | 2013-08-03T19:00:02Z |
         When running osm2pgsql pgsql with parameters
             | --slim | --middle-schema=foobar | --schema=baz |
 
@@ -120,8 +134,9 @@ Feature: Tests for the osm2pgsql-replication script with property table
         When running osm2pgsql pgsql with parameters
             | --slim |
 
-        Then running osm2pgsql-replication fails with returncode 1
+        When running osm2pgsql-replication
             | init | --middle-schema=foobar |
+        Then execution fails with return code 1
         And the error output contains
             """
             Database needs to be imported in --slim mode.
@@ -220,9 +235,9 @@ Feature: Tests for the osm2pgsql-replication script with property table
         Given the input file 'liechtenstein-2013-08-03.osm.pbf'
         And the replication service at http://example.com/europe/liechtenstein-updates
             | sequence | timestamp            |
-            | 345      | 2020-10-04T01:00:00Z |
-            | 346      | 2020-10-04T02:00:00Z |
-            | 347      | 2020-10-04T03:00:00Z |
+            | 344      | 2013-08-03T13:00:02Z |
+            | 345      | 2013-08-03T14:00:02Z |
+            | 346      | 2013-08-03T15:00:02Z |
         When running osm2pgsql pgsql with parameters
             | --slim |
 
@@ -265,8 +280,9 @@ Feature: Tests for the osm2pgsql-replication script with property table
         When running osm2pgsql pgsql with parameters
             | --slim |
 
-        Then running osm2pgsql-replication fails with returncode 1
+        When running osm2pgsql-replication
             | update |
+        Then execution fails with return code 1
         And the error output contains
             """
             Updates not set up correctly.
@@ -344,8 +360,9 @@ Feature: Tests for the osm2pgsql-replication script with property table
         When running osm2pgsql pgsql with parameters
             | --slim |
 
-        Then running osm2pgsql-replication fails with returncode 2
+        When running osm2pgsql-replication
             | status | --json |
+        Then execution fails with return code 2
         And the standard output contains
             """
             "status": 2
@@ -364,9 +381,46 @@ Feature: Tests for the osm2pgsql-replication script with property table
 
         And running osm2pgsql-replication
             | status | --json |
-        Then the standard output contains
+        Then execution is successful
+        And the standard output contains
             """
             "status": 0
             "server": {"base_url": "http://example.com/europe/liechtenstein-updates", "sequence": 10000001, "timestamp": "2013-10-01T01:00:00Z"
             "local": {"sequence": 9999999, "timestamp": "2013-08-03T19:00:02Z"
+            """
+
+
+    Scenario: Replication initialisation will fail when diffs are not old enough
+        Given the database schema foobar
+        Given the input file 'liechtenstein-2013-08-03.osm.pbf'
+        And the replication service at http://example.com/europe/liechtenstein-updates
+            | sequence | timestamp            |
+            | 10000000 | 2020-01-01T01:00:02Z |
+        When running osm2pgsql pgsql with parameters
+            | --slim |
+
+        When running osm2pgsql-replication
+            | init | --server | http://example.com/europe/liechtenstein-updates |
+        Then execution fails with return code 1
+        And the error output contains
+            """
+            The replication service does not have diff files for the requested date.
+            """
+
+
+    Scenario: Replication initialisation will fail when diffs are not old enough
+        Given the database schema foobar
+        Given the input file 'liechtenstein-2013-08-03.osm.pbf'
+        And the replication service at http://example.com/europe/liechtenstein-updates
+            | sequence | timestamp            |
+            | 10000000 | 2020-01-01T01:00:02Z |
+        When running osm2pgsql pgsql with parameters
+            | --slim |
+
+        When running osm2pgsql-replication
+            | init |
+        Then execution fails with return code 1
+        And the error output contains
+            """
+            Cannot load state information for 9999999 from replication service http://example.com/europe/liechtenstein-updates.
             """

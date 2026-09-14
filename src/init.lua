@@ -46,6 +46,16 @@ function osm2pgsql.define_area_table(_name, _columns, _options)
     return _define_table_impl('area', _name, _columns, _options)
 end
 
+function osm2pgsql.node_member_ids(relation)
+    local ids = {}
+    for _, member in ipairs(relation.members) do
+        if member.type == 'n' then
+            ids[#ids + 1] = member.ref
+        end
+    end
+    return ids
+end
+
 function osm2pgsql.way_member_ids(relation)
     local ids = {}
     for _, member in ipairs(relation.members) do
@@ -166,32 +176,16 @@ function osm2pgsql.split_string(str, separator)
     return result
 end
 
--- This will be the metatable for the OSM objects given to the process callback
--- functions.
-local inner_metatable = {
-    __index = function(table, key)
-        if key == 'version' or key == 'timestamp' or
-           key == 'changeset' or key == 'uid' or key == 'user' then
-            return nil
+if osm2pgsql.OSMObject then
+    osm2pgsql.OSMObject.__index.grab_tag = function(data, tag)
+        if not tag then
+            error("Missing tag key", 2)
         end
-        error("unknown field '" .. key .. "'", 2)
+        local v = data.tags[tag]
+        data.tags[tag] = nil
+        return v
     end
-}
-
-object_metatable = {
-    __index =  {
-        grab_tag = function(data, tag)
-            if not tag then
-                error("Missing tag key", 2)
-            end
-            local v = data.tags[tag]
-            data.tags[tag] = nil
-            return v
-        end
-    }
-}
-
-setmetatable(object_metatable.__index, inner_metatable)
+end
 
 -- This is used to iterate over (multi)geometries.
 function osm2pgsql.Geometry.geometries(geom)

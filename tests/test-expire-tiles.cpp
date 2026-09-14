@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -13,14 +13,17 @@
 #include <set>
 
 #include "expire-tiles.hpp"
+#include "geom-functions.hpp"
 #include "reprojection.hpp"
 #include "tile-output.hpp"
 #include "tile.hpp"
 
-static std::shared_ptr<reprojection> defproj{
-    reprojection::create_projection(PROJ_SPHERE_MERC)};
+namespace {
 
-static std::set<tile_t> generate_random(uint32_t zoom, size_t count)
+std::shared_ptr<reprojection_t> defproj{
+    reprojection_t::create_projection(PROJ_SPHERE_MERC)};
+
+std::set<tile_t> generate_random(uint32_t zoom, size_t count)
 {
     // Use a random device with a fixed seed. We don't really care about
     // the quality of random numbers here, we just need to generate valid
@@ -39,24 +42,23 @@ static std::set<tile_t> generate_random(uint32_t zoom, size_t count)
     return set;
 }
 
-static void expire_centroids(expire_tiles *et, std::set<tile_t> const &tiles)
+void expire_centroids(expire_tiles_t *et, std::set<tile_t> const &tiles)
 {
     for (auto const &t : tiles) {
         auto const p = t.center();
-        et->from_bbox({p.x(), p.y(), p.x(), p.y()}, expire_config_t{});
+        et->from_geometry(p, expire_config_t{});
     }
 }
 
-static void check_quadkey(quadkey_t quadkey_expected,
-                          tile_t const &tile) noexcept
+void check_quadkey(quadkey_t quadkey_expected, tile_t const &tile) noexcept
 {
     CHECK(tile.quadkey() == quadkey_expected);
     auto const t = tile_t::from_quadkey(quadkey_expected, tile.zoom());
     CHECK(t == tile);
 }
 
-static std::vector<tile_t> get_tiles_ordered(expire_tiles *et, uint32_t minzoom,
-                                             uint32_t maxzoom)
+std::vector<tile_t> get_tiles_ordered(expire_tiles_t *et, uint32_t minzoom,
+                                      uint32_t maxzoom)
 {
     std::vector<tile_t> tiles;
 
@@ -66,7 +68,7 @@ static std::vector<tile_t> get_tiles_ordered(expire_tiles *et, uint32_t minzoom,
     return tiles;
 }
 
-static std::set<tile_t> get_tiles_unordered(expire_tiles *et, uint32_t zoom)
+std::set<tile_t> get_tiles_unordered(expire_tiles_t *et, uint32_t zoom)
 {
     std::set<tile_t> tiles;
 
@@ -75,6 +77,8 @@ static std::set<tile_t> get_tiles_unordered(expire_tiles *et, uint32_t zoom)
 
     return tiles;
 }
+
+} // anonymous namespace
 
 TEST_CASE("tile to quadkey", "[NoDB]")
 {
@@ -86,18 +90,24 @@ TEST_CASE("tile to quadkey", "[NoDB]")
 
 TEST_CASE("simple expire z1", "[NoDB]")
 {
-    uint32_t const minzoom = 1;
-    uint32_t const maxzoom = 1;
-    expire_tiles et{minzoom, defproj};
+    uint32_t const zoom = 1;
+    expire_tiles_t et{zoom, defproj};
 
     // as big a bbox as possible at the origin to dirty all four
     // quadrants of the world.
-    et.from_bbox({-10000, -10000, 10000, 10000}, expire_config_t{});
+    geom::geometry_t const geom{
+        geom::polygon_t{geom::ring_t{{-10000, -10000},
+                                     {-10000, 10000},
+                                     {10000, 10000},
+                                     {10000, -1000},
+                                     {-10000, -10000}}}};
 
-    auto const tiles = get_tiles_ordered(&et, minzoom, maxzoom);
-    CHECK(tiles.size() == 4);
+    et.from_geometry(geom, expire_config_t{});
 
-    auto itr = tiles.begin();
+    auto const tiles = get_tiles_ordered(&et, zoom, zoom);
+    REQUIRE(tiles.size() == 4);
+
+    auto itr = tiles.cbegin();
     CHECK(*(itr++) == tile_t(1, 0, 0));
     CHECK(*(itr++) == tile_t(1, 1, 0));
     CHECK(*(itr++) == tile_t(1, 0, 1));
@@ -106,18 +116,24 @@ TEST_CASE("simple expire z1", "[NoDB]")
 
 TEST_CASE("simple expire z3", "[NoDB]")
 {
-    uint32_t const minzoom = 3;
-    uint32_t const maxzoom = 3;
-    expire_tiles et{minzoom, defproj};
+    uint32_t const zoom = 3;
+    expire_tiles_t et{zoom, defproj};
 
     // as big a bbox as possible at the origin to dirty all four
     // quadrants of the world.
-    et.from_bbox({-10000, -10000, 10000, 10000}, expire_config_t{});
+    geom::geometry_t const geom{
+        geom::polygon_t{geom::ring_t{{-10000, -10000},
+                                     {-10000, 10000},
+                                     {10000, 10000},
+                                     {10000, -1000},
+                                     {-10000, -10000}}}};
 
-    auto const tiles = get_tiles_ordered(&et, minzoom, maxzoom);
+    et.from_geometry(geom, expire_config_t{});
+
+    auto const tiles = get_tiles_ordered(&et, zoom, zoom);
     CHECK(tiles.size() == 4);
 
-    auto itr = tiles.begin();
+    auto itr = tiles.cbegin();
     CHECK(*(itr++) == tile_t(3, 3, 3));
     CHECK(*(itr++) == tile_t(3, 4, 3));
     CHECK(*(itr++) == tile_t(3, 3, 4));
@@ -126,28 +142,92 @@ TEST_CASE("simple expire z3", "[NoDB]")
 
 TEST_CASE("simple expire z18", "[NoDB]")
 {
-    uint32_t const minzoom = 18;
-    uint32_t const maxzoom = 18;
-    expire_tiles et{minzoom, defproj};
+    uint32_t const zoom = 18;
+    expire_tiles_t et{zoom, defproj};
 
     // dirty a smaller bbox this time, as at z18 the scale is
     // pretty small.
-    et.from_bbox({-1, -1, 1, 1}, expire_config_t{});
+    geom::geometry_t const geom{geom::polygon_t{
+        geom::ring_t{{-1, -1}, {-1, 1}, {1, 1}, {1, -1}, {-1, -1}}}};
 
-    auto const tiles = get_tiles_ordered(&et, minzoom, maxzoom);
+    et.from_geometry(geom, expire_config_t{});
+
+    auto const tiles = get_tiles_ordered(&et, zoom, zoom);
     CHECK(tiles.size() == 4);
 
-    auto itr = tiles.begin();
+    auto itr = tiles.cbegin();
     CHECK(*(itr++) == tile_t(18, 131071, 131071));
     CHECK(*(itr++) == tile_t(18, 131072, 131071));
     CHECK(*(itr++) == tile_t(18, 131071, 131072));
     CHECK(*(itr++) == tile_t(18, 131072, 131072));
 }
 
+TEST_CASE("simple expire z10 bounds 0, 0", "[NoDB]")
+{
+    uint32_t const zoom = 10;
+    expire_tiles_t et{zoom, defproj};
+
+    et.from_geometry(geom::point_t{-20037508.34, 20037508.34},
+                     expire_config_t{});
+
+    auto const tiles = get_tiles_ordered(&et, zoom, zoom);
+    CHECK(tiles.size() == 1);
+
+    auto itr = tiles.cbegin();
+    CHECK(*(itr++) == tile_t(10, 0, 0));
+}
+
+TEST_CASE("simple expire z10 bounds 0, 1023", "[NoDB]")
+{
+    uint32_t const zoom = 10;
+    expire_tiles_t et{zoom, defproj};
+
+    et.from_geometry(geom::point_t{-20037508.34, -20037508.34},
+                     expire_config_t{});
+
+    auto const tiles = get_tiles_ordered(&et, zoom, zoom);
+    CHECK(tiles.size() == 1);
+
+    auto itr = tiles.cbegin();
+    CHECK(*(itr++) == tile_t(10, 0, 1023));
+}
+
+TEST_CASE("simple expire z10 bounds 1023, 0", "[NoDB]")
+{
+    uint32_t const zoom = 10;
+    expire_tiles_t et{zoom, defproj};
+
+    et.from_geometry(geom::point_t{20037508.34, 20037508.34},
+                     expire_config_t{});
+
+    auto const tiles = get_tiles_ordered(&et, zoom, zoom);
+    CHECK(tiles.size() == 2);
+
+    auto itr = tiles.cbegin();
+    CHECK(*(itr++) == tile_t(10, 0, 0));
+    CHECK(*(itr++) == tile_t(10, 1023, 0));
+}
+
+TEST_CASE("simple expire z10 bounds 1023, 1023", "[NoDB]")
+{
+    uint32_t const zoom = 10;
+    expire_tiles_t et{zoom, defproj};
+
+    et.from_geometry(geom::point_t{20037508.34, -20037508.34},
+                     expire_config_t{});
+
+    auto const tiles = get_tiles_ordered(&et, zoom, zoom);
+    CHECK(tiles.size() == 2);
+
+    auto itr = tiles.cbegin();
+    CHECK(*(itr++) == tile_t(10, 0, 1023));
+    CHECK(*(itr++) == tile_t(10, 1023, 1023));
+}
+
 TEST_CASE("expire a simple line", "[NoDB]")
 {
     uint32_t const zoom = 18;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{zoom, defproj};
 
     et.from_geometry(
         geom::linestring_t{{1398725.0, 7493354.0}, {1399030.0, 7493354.0}},
@@ -156,7 +236,7 @@ TEST_CASE("expire a simple line", "[NoDB]")
     auto const tiles = get_tiles_ordered(&et, zoom, zoom);
     CHECK(tiles.size() == 3);
 
-    auto itr = tiles.begin();
+    auto itr = tiles.cbegin();
     CHECK(*(itr++) == tile_t(18, 140221, 82055));
     CHECK(*(itr++) == tile_t(18, 140222, 82055));
     CHECK(*(itr++) == tile_t(18, 140223, 82055));
@@ -165,7 +245,7 @@ TEST_CASE("expire a simple line", "[NoDB]")
 TEST_CASE("expire a line near the tile border", "[NoDB]")
 {
     uint32_t const zoom = 18;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{zoom, defproj};
 
     et.from_geometry(
         geom::linestring_t{{1398945.0, 7493267.0}, {1398960.0, 7493282.0}},
@@ -174,7 +254,7 @@ TEST_CASE("expire a line near the tile border", "[NoDB]")
     auto const tiles = get_tiles_ordered(&et, zoom, zoom);
     REQUIRE(tiles.size() == 4);
 
-    auto itr = tiles.begin();
+    auto itr = tiles.cbegin();
     CHECK(*(itr++) == tile_t(18, 140222, 82055));
     CHECK(*(itr++) == tile_t(18, 140223, 82055));
     CHECK(*(itr++) == tile_t(18, 140222, 82056));
@@ -184,7 +264,7 @@ TEST_CASE("expire a line near the tile border", "[NoDB]")
 TEST_CASE("expire a u-shaped linestring", "[NoDB]")
 {
     uint32_t const zoom = 18;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{zoom, defproj};
 
     et.from_geometry(geom::linestring_t{{1398586.0, 7493485.0},
                                         {1398575.0, 7493347.0},
@@ -206,7 +286,7 @@ TEST_CASE("expire a u-shaped linestring", "[NoDB]")
 TEST_CASE("expire longer horizontal line", "[NoDB]")
 {
     uint32_t const zoom = 18;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{zoom, defproj};
 
     et.from_geometry(
         geom::linestring_t{{1397815.0, 7493800.0}, {1399316.0, 7493780.0}},
@@ -223,7 +303,7 @@ TEST_CASE("expire longer horizontal line", "[NoDB]")
 TEST_CASE("expire longer diagonal line", "[NoDB]")
 {
     uint32_t const zoom = 18;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{zoom, defproj};
 
     et.from_geometry(
         geom::linestring_t{{1398427.0, 7494118.0}, {1398869.0, 7493189.0}},
@@ -248,6 +328,48 @@ TEST_CASE("expire longer diagonal line", "[NoDB]")
     CHECK(tiles.count(tile_t(18, 140222, 82056)) == 1);
 }
 
+TEST_CASE("expire polygon in Z shape", "[NoDB]")
+{
+    uint32_t const zoom = 17;
+    expire_tiles_t et{zoom, defproj};
+
+    geom::geometry_t const geom{geom::polygon_t{geom::ring_t{
+        {7.1390, 55.5498},
+        {7.1637, 55.5495},
+        {7.1633, 55.5457},
+        {7.1489, 55.5430},
+        {7.1493, 55.5401},
+        {7.1628, 55.5401},
+        {7.1632, 55.5379},
+        {7.1469, 55.5381},
+        {7.1380, 55.5437},
+        {7.1486, 55.5452},
+        {7.1528, 55.5480},
+        {7.1390, 55.5484},
+        {7.1390, 55.5498}
+    }}};
+
+    auto const geom_merc = geom::transform(geom, *defproj);
+
+    et.from_geometry(geom_merc, expire_config_t{});
+
+    auto const tiles = get_tiles_unordered(&et, zoom);
+    REQUIRE(tiles.size() == 76);
+
+    CHECK(tiles.count(tile_t(17, 68135, 41106)) == 1);
+    CHECK(tiles.count(tile_t(17, 68135, 41107)) == 1);
+    CHECK(tiles.count(tile_t(17, 68135, 41108)) == 0);
+    CHECK(tiles.count(tile_t(17, 68135, 41109)) == 1);
+
+    CHECK(tiles.count(tile_t(17, 68134, 41109)) == 0);
+    CHECK(tiles.count(tile_t(17, 68134, 41110)) == 1);
+    CHECK(tiles.count(tile_t(17, 68134, 41111)) == 0);
+
+    CHECK(tiles.count(tile_t(17, 68144, 41111)) == 0);
+    CHECK(tiles.count(tile_t(17, 68144, 41112)) == 1);
+    CHECK(tiles.count(tile_t(17, 68144, 41113)) == 1);
+}
+
 /**
  * Test tile expiry on two zoom levels.
  */
@@ -255,16 +377,19 @@ TEST_CASE("simple expire z17 and z18", "[NoDB]")
 {
     uint32_t const minzoom = 17;
     uint32_t const maxzoom = 18;
-    expire_tiles et{maxzoom, defproj};
+    expire_tiles_t et{maxzoom, defproj};
 
     // dirty a smaller bbox this time, as at z18 the scale is
     // pretty small.
-    et.from_bbox({-1, -1, 1, 1}, expire_config_t{});
+    geom::geometry_t const geom{geom::polygon_t{
+        geom::ring_t{{-1, -1}, {-1, 1}, {1, 1}, {1, -1}, {-1, -1}}}};
+
+    et.from_geometry(geom, expire_config_t{});
 
     auto const tiles = get_tiles_ordered(&et, minzoom, maxzoom);
     CHECK(tiles.size() == 8);
 
-    auto itr = tiles.begin();
+    auto itr = tiles.cbegin();
     CHECK(*(itr++) == tile_t(18, 131071, 131071));
     CHECK(*(itr++) == tile_t(17, 65535, 65535));
     CHECK(*(itr++) == tile_t(18, 131072, 131071));
@@ -283,13 +408,17 @@ TEST_CASE("simple expire z17 and z18 in one superior tile", "[NoDB]")
 {
     uint32_t const minzoom = 17;
     uint32_t const maxzoom = 18;
-    expire_tiles et{maxzoom, defproj};
+    expire_tiles_t et{maxzoom, defproj};
 
-    et.from_bbox({-163, 140, -140, 164}, expire_config_t{});
+    geom::geometry_t const geom{geom::polygon_t{geom::ring_t{
+        {-163, 140}, {-163, 164}, {-140, 164}, {-140, 140}, {-163, 140}}}};
+
+    et.from_geometry(geom, expire_config_t{});
+
     auto const tiles = get_tiles_ordered(&et, minzoom, maxzoom);
     CHECK(tiles.size() == 5);
 
-    auto itr = tiles.begin();
+    auto itr = tiles.cbegin();
     CHECK(*(itr++) == tile_t(18, 131070, 131070));
     CHECK(*(itr++) == tile_t(17, 65535, 65535));
     CHECK(*(itr++) == tile_t(18, 131071, 131070));
@@ -305,7 +434,7 @@ TEST_CASE("expire centroids", "[NoDB]")
     uint32_t const zoom = 18;
 
     for (int i = 0; i < 100; ++i) {
-        expire_tiles et{zoom, defproj};
+        expire_tiles_t et{zoom, defproj};
 
         auto check_set = generate_random(zoom, 100);
         expire_centroids(&et, check_set);
@@ -313,123 +442,4 @@ TEST_CASE("expire centroids", "[NoDB]")
         auto const set = get_tiles_unordered(&et, zoom);
         CHECK(set == check_set);
     }
-}
-
-/**
- * After expiring a random set of tiles in one expire_tiles object
- * and a different set in another, when they are merged together they are the
- * same as if the union of the sets of tiles had been expired.
- */
-TEST_CASE("merge expire sets", "[NoDB]")
-{
-    uint32_t const zoom = 18;
-
-    for (int i = 0; i < 100; ++i) {
-        expire_tiles et{zoom, defproj};
-        expire_tiles et1{zoom, defproj};
-        expire_tiles et2{zoom, defproj};
-
-        auto check_set1 = generate_random(zoom, 100);
-        expire_centroids(&et1, check_set1);
-
-        auto check_set2 = generate_random(zoom, 100);
-        expire_centroids(&et2, check_set2);
-
-        et.merge_and_destroy(&et1);
-        et.merge_and_destroy(&et2);
-
-        check_set1.merge(check_set2);
-
-        auto const set = get_tiles_unordered(&et, zoom);
-
-        CHECK(set == check_set1);
-    }
-}
-
-/**
- * Merging two identical sets results in the same set. This guarantees that
- * we check some pathways of the merging which possibly could be skipped by
- * the random tile set in the previous test.
- */
-TEST_CASE("merge identical expire sets", "[NoDB]")
-{
-    uint32_t const zoom = 18;
-
-    for (int i = 0; i < 100; ++i) {
-        expire_tiles et{zoom, defproj};
-        expire_tiles et1{zoom, defproj};
-        expire_tiles et2{zoom, defproj};
-
-        auto const check_set = generate_random(zoom, 100);
-        expire_centroids(&et1, check_set);
-        expire_centroids(&et2, check_set);
-
-        et.merge_and_destroy(&et1);
-        et.merge_and_destroy(&et2);
-
-        auto const set = get_tiles_unordered(&et, zoom);
-
-        CHECK(set == check_set);
-    }
-}
-
-/**
- * Make sure that we're testing the case where some tiles are in both.
- */
-TEST_CASE("merge overlapping expire sets", "[NoDB]")
-{
-    uint32_t const zoom = 18;
-
-    for (int i = 0; i < 100; ++i) {
-        expire_tiles et{zoom, defproj};
-        expire_tiles et1{zoom, defproj};
-        expire_tiles et2{zoom, defproj};
-
-        auto check_set1 = generate_random(zoom, 100);
-        expire_centroids(&et1, check_set1);
-
-        auto check_set2 = generate_random(zoom, 100);
-        expire_centroids(&et2, check_set2);
-
-        auto check_set3 = generate_random(zoom, 100);
-        expire_centroids(&et1, check_set3);
-        expire_centroids(&et2, check_set3);
-
-        et.merge_and_destroy(&et1);
-        et.merge_and_destroy(&et2);
-
-        check_set1.merge(check_set2);
-        check_set1.merge(check_set3);
-
-        auto const set = get_tiles_unordered(&et, zoom);
-
-        CHECK(set == check_set1);
-    }
-}
-
-/**
- * The set union still works when we expire large contiguous areas of tiles
- * (i.e: ensure that we handle the "complete" flag correctly)
- */
-TEST_CASE("merge with complete flag", "[NoDB]")
-{
-    uint32_t const zoom = 18;
-
-    expire_tiles et{zoom, defproj};
-    expire_tiles et0{zoom, defproj};
-    expire_tiles et1{zoom, defproj};
-    expire_tiles et2{zoom, defproj};
-
-    // et1&2 are two halves of et0's box
-    et0.from_bbox({-10000, -10000, 10000, 10000}, expire_config_t{});
-    et1.from_bbox({-10000, -10000, 0, 10000}, expire_config_t{});
-    et2.from_bbox({0, -10000, 10000, 10000}, expire_config_t{});
-
-    et.merge_and_destroy(&et1);
-    et.merge_and_destroy(&et2);
-
-    auto const set = get_tiles_unordered(&et, zoom);
-    auto const set0 = get_tiles_unordered(&et0, zoom);
-
-    CHECK(set == set0);
 }

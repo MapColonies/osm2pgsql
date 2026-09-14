@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class params_t;
@@ -59,16 +60,18 @@ public:
 
     std::string context();
 
-    template <typename... ARGS>
-    void log_gen(ARGS... args)
+    template <typename... TArgs>
+    void log_gen(fmt::format_string<TArgs...> format_str, TArgs &&...args)
     {
         if (m_debug) {
-            log_debug(args...);
+            log_debug(format_str, std::forward<TArgs>(args)...);
         }
     }
 
+    bool append_mode() const noexcept { return m_append; }
+
 protected:
-    gen_base_t(pg_conn_t *connection, params_t *params);
+    gen_base_t(pg_conn_t *connection, bool append, params_t *params);
 
     /**
      * Check that the 'src_table' and 'dest_table' parameters exist and that
@@ -98,6 +101,11 @@ protected:
 
     pg_result_t dbexec(params_t const &tmp_params, std::string const &templ);
 
+    void dbprepare(std::string const &stmt, std::string const &templ);
+
+    void dbprepare(std::string const &stmt, params_t const &tmp_params,
+                   std::string const &templ);
+
     void raster_table_preprocess(std::string const &table);
 
     void raster_table_postprocess(std::string const &table);
@@ -106,6 +114,7 @@ private:
     std::vector<util::timer_t> m_timers;
     pg_conn_t *m_connection;
     params_t *m_params;
+    bool m_append;
     bool m_debug = false;
 }; // class gen_base_t
 

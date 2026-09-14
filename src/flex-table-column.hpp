@@ -6,17 +6,19 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "expire-config.hpp"
 #include "expire-tiles.hpp"
 #include "geom.hpp"
+#include "projection.hpp"
 
 #include <cassert>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 enum class table_column_type : uint8_t
@@ -30,6 +32,10 @@ enum class table_column_type : uint8_t
     int8,
 
     real,
+    double_precision,
+
+    timestamp,
+    timestamptz,
 
     hstore,
     json,
@@ -46,11 +52,11 @@ enum class table_column_type : uint8_t
     multipolygon,
     geometrycollection,
 
-    area,
-
     id_type,
     id_num
 };
+
+class geometry_cache_t;
 
 /**
  * A column in a flex_table_t.
@@ -101,7 +107,7 @@ public:
     bool needs_isvalid() const noexcept
     {
         assert(is_geometry_column());
-        return !m_create_only && m_srid != 4326 &&
+        return !m_create_only && m_srid != PROJ_LATLONG &&
                m_type != table_column_type::point;
     }
 
@@ -132,8 +138,11 @@ public:
         return m_expires;
     }
 
-    void do_expire(geom::geometry_t const &geom,
-                   std::vector<expire_tiles> *expire) const;
+    void do_expire(std::vector<geom::geometry_t> *geoms_old,
+                   std::vector<geom::geometry_t> *geoms_new,
+                   std::vector<expire_tiles_t> *expire,
+                   std::vector<expire_output_t> *expire_outputs,
+                   bool enable_diff_expire) const;
 
 private:
     std::vector<expire_config_t> m_expires;
@@ -158,16 +167,49 @@ private:
     table_column_type m_type;
 
     /**
-     * For geometry and area columns only: The projection SRID. Default is
-     * web mercator.
+     * For geometry columns only: The projection SRID. Default is web mercator.
      */
-    int m_srid = 3857;
+    int m_srid = PROJ_SPHERE_MERC;
 
     /// NOT NULL constraint
     bool m_not_null = false;
 
     /// Column will be created but not filled by osm2pgsql.
     bool m_create_only = false;
-};
+}; // class flex_table_column_t
+
+/**
+ * While processing an OSM object, this cache is used to hold all old and all
+ * new geometries stored in all geometry columns with expire config in a table.
+ * Later those geometries are used to calculate the expire.
+ */
+class geometry_cache_t
+{
+public:
+    template <typename GEOM>
+    void add_old(flex_table_column_t const *column, GEOM &&geom)
+    {
+        m_geometries[column].first.push_back(std::forward<GEOM>(geom));
+    }
+
+    template <typename GEOM>
+    void add_new(flex_table_column_t const *column, GEOM &&geom)
+    {
+        m_geometries[column].second.push_back(std::forward<GEOM>(geom));
+    }
+
+    auto begin() noexcept { return m_geometries.begin(); }
+
+    auto end() noexcept { return m_geometries.end(); }
+
+    void clear() { m_geometries.clear(); }
+
+private:
+    std::unordered_map<
+        flex_table_column_t const *,
+        std::pair<std::vector<geom::geometry_t>, std::vector<geom::geometry_t>>>
+        m_geometries;
+
+}; // class geometry_cache_t
 
 #endif // OSM2PGSQL_FLEX_TABLE_COLUMN_HPP

@@ -6,7 +6,8 @@ Feature: Expire output definitions in Lua file
             """
             osm2pgsql.define_expire_output()
             """
-        Then running osm2pgsql flex fails
+        When running osm2pgsql flex
+        Then execution fails
         And the error output contains
             """
             Argument #1 to 'define_expire_output' must be a Lua table.
@@ -20,7 +21,8 @@ Feature: Expire output definitions in Lua file
                 filename = false
             })
             """
-        Then running osm2pgsql flex fails
+        When running osm2pgsql flex
+        Then execution fails
         And the error output contains
             """
             The expire output field must contain a 'filename' string field (or nil for default: '').
@@ -35,7 +37,8 @@ Feature: Expire output definitions in Lua file
                 schema = false
             })
             """
-        Then running osm2pgsql flex fails
+        When running osm2pgsql flex
+        Then execution fails
         And the error output contains
             """
             The expire output field must contain a 'schema' string field (or nil for default: 'public').
@@ -49,7 +52,8 @@ Feature: Expire output definitions in Lua file
                 table = false
             })
             """
-        Then running osm2pgsql flex fails
+        When running osm2pgsql flex
+        Then execution fails
         And the error output contains
             """
             The expire output field must contain a 'table' string field (or nil for default: '').
@@ -64,7 +68,8 @@ Feature: Expire output definitions in Lua file
                 filename = 'somewhere'
             })
             """
-        Then running osm2pgsql flex fails
+        When running osm2pgsql flex
+        Then execution fails
         And the error output contains
             """
             The 'maxzoom' field in a expire output must contain an integer.
@@ -80,7 +85,8 @@ Feature: Expire output definitions in Lua file
                 filename = 'somewhere'
             })
             """
-        Then running osm2pgsql flex fails
+        When running osm2pgsql flex
+        Then execution fails
         And the error output contains
             """
             The 'minzoom' field in a expire output must contain an integer.
@@ -95,7 +101,8 @@ Feature: Expire output definitions in Lua file
                 filename = 'somewhere'
             })
             """
-        Then running osm2pgsql flex fails
+        When running osm2pgsql flex
+        Then execution fails
         And the error output contains
             """
             The 'maxzoom' field in a expire output must be between 1 and 20.
@@ -111,7 +118,8 @@ Feature: Expire output definitions in Lua file
                 filename = 'somewhere'
             })
             """
-        Then running osm2pgsql flex fails
+        When running osm2pgsql flex
+        Then execution fails
         And the error output contains
             """
             The 'minzoom' field in a expire output must be between 1 and 'maxzoom'.
@@ -127,9 +135,44 @@ Feature: Expire output definitions in Lua file
                 filename = 'somewhere'
             })
             """
-        Then running osm2pgsql flex fails
+        When running osm2pgsql flex
+        Then execution fails
         And the error output contains
             """
             The 'minzoom' field in a expire output must be between 1 and 'maxzoom'.
+            """
+
+    Scenario: max_tiles_geometry in expire output definition has to be in range
+        Given the input file 'liechtenstein-2013-08-03.osm.pbf'
+        And the lua style
+            """
+            osm2pgsql.define_expire_output({
+                maxzoom = 12,
+                filename = 'somewhere',
+                max_tiles_geometry = 12345678901234567890
+            })
+            """
+        When running osm2pgsql flex
+        Then execution fails
+        And the error output contains
+            """
+            The 'max_tiles_geometry' field in a expire output must be between 1 and 4 << 20.
+            """
+
+    Scenario: max_tiles_overall in expire output definition has to be in range
+        Given the input file 'liechtenstein-2013-08-03.osm.pbf'
+        And the lua style
+            """
+            osm2pgsql.define_expire_output({
+                maxzoom = 12,
+                filename = 'somewhere',
+                max_tiles_overall = -1
+            })
+            """
+        When running osm2pgsql flex
+        Then execution fails
+        And the error output contains
+            """
+            The 'max_tiles_overall' field in a expire output must be between 1 and 4 << 20.
             """
 

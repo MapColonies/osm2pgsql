@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -36,10 +36,10 @@ public:
                                 bool *roads, taglist_t *out_tags) override;
 
 private:
-    constexpr static char const *const node_func = "filter_tags_node";
-    constexpr static char const *const way_func = "filter_tags_way";
-    constexpr static char const *const rel_func = "filter_basic_tags_rel";
-    constexpr static char const *const rel_mem_func =
+    constexpr static char const *const NODE_FUNC = "filter_tags_node";
+    constexpr static char const *const WAY_FUNC = "filter_tags_way";
+    constexpr static char const *const REL_FUNC = "filter_basic_tags_rel";
+    constexpr static char const *const REL_MEM_FUNC =
         "filter_tags_relation_member";
 
     void check_lua_function_exists(char const *func_name);

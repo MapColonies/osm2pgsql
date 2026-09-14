@@ -6,18 +6,22 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "gen-base.hpp"
 
+#include <cstddef>
 #include <string_view>
+
+class params_t;
+class pg_conn_t;
 
 class gen_rivers_t : public gen_base_t
 {
 public:
-    gen_rivers_t(pg_conn_t *connection, params_t *params);
+    gen_rivers_t(pg_conn_t *connection, bool append, params_t *params);
 
     void process() override;
 
@@ -37,7 +41,6 @@ private:
 
     std::size_t m_num_waterways = 0;
     std::size_t m_num_points = 0;
-    bool m_delete_existing;
 };
 
 #endif // OSM2PGSQL_GEN_RIVERS_HPP

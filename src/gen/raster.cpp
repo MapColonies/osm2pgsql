@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -11,16 +11,19 @@
 
 #include "canvas.hpp"
 #include "format.hpp"
-#include "pgsql.hpp"
 #include "tile.hpp"
 
 #include <string>
+
+namespace {
 
 template <typename T>
 void append(std::string *str, T value)
 {
     str->append(reinterpret_cast<char *>(&value), sizeof(T));
 }
+
+} // anonymous namespace
 
 void add_raster_header(std::string *wkb, wkb_raster_header const &data)
 {

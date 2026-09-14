@@ -10,7 +10,7 @@ Feature: Test handling of invalid geometries
                 ids = { type = 'way', id_column = 'osm_id' },
                 columns = {
                     { column = 'tags', type = 'hstore' },
-                    { column = 'geom', type = 'linestring', projection = 4326 },
+                    { column = 'geom', type = 'linestring', projection = 4326, not_null = true },
                 }
             }
 
@@ -19,35 +19,39 @@ Feature: Test handling of invalid geometries
                 ids = { type = 'area', id_column = 'osm_id' },
                 columns = {
                     { column = 'tags', type = 'hstore' },
-                    { column = 'geom', type = 'geometry', projection = 4326 }
+                    { column = 'geom', type = 'geometry', projection = 4326, not_null = true }
                 }
             }
 
             function osm2pgsql.process_way(object)
                 if object.tags.natural then
-                    tables.polygon:add_row({
+                    tables.polygon:insert({
                         tags = object.tags,
-                        geom = { create = 'area' }
+                        geom = object:as_polygon()
                     })
                 else
-                    tables.line:add_row({
-                        tags = object.tags
+                    tables.line:insert({
+                        tags = object.tags,
+                        geom = object:as_linestring()
                     })
                 end
             end
 
             function osm2pgsql.process_relation(object)
-                tables.polygon:add_row({
-                    tags = object.tags,
-                    geom = { create = 'area', split_at = 'multi' }
-                })
+                local mgeom = object:as_multipolygon()
+                for sgeom in mgeom:geometries() do
+                    tables.polygon:insert({
+                        tags = object.tags,
+                        geom = sgeom
+                    })
+                end
             end
             """
 
     Scenario: Invalid way geometry should be ignored
         Given the grid with origin 10.0 10.0
-            | 10 | 11 |
             |    | 12 |
+            | 10 | 11 |
         And the OSM data
             """
             n14 v1 dV x10.0 y10.0
@@ -62,9 +66,9 @@ Feature: Test handling of invalid geometries
 
         Then table osm2pgsql_test_polygon has 0 rows
         Then table osm2pgsql_test_line contains exactly
-            | osm_id | ST_AsText(geom) |
-            | 20     | 10, 12          |
-            | 21     | 10, 12          |
+            | osm_id | geom!geo |
+            | 20     | 10, 12   |
+            | 21     | 10, 12   |
 
 
     Scenario: Invalid area geometry from way should be ignored
@@ -82,7 +86,7 @@ Feature: Test handling of invalid geometries
 
         Then table osm2pgsql_test_line has 0 rows
         Then table osm2pgsql_test_polygon contains exactly
-            | osm_id | ST_AsText(geom)  |
+            | osm_id | geom!geo         |
             | 20     | (10, 12, 11, 10) |
             | 21     | (10, 12, 11, 10) |
 

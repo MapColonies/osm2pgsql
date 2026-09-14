@@ -4,7 +4,7 @@ on: [ push, pull_request ]
 
 jobs:
   ubuntu-test-install:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     strategy:
       matrix:
@@ -19,16 +19,16 @@ jobs:
 
     env:
       LUA_VERSION: 5.3
-      POSTGRESQL_VERSION: 14
+      POSTGRESQL_VERSION: 16
       POSTGIS_VERSION: 3
       BUILD_TYPE: Release
-      CXXFLAGS: -pedantic -Wextra -Wno-stringop-overread -Werror
+      CXXFLAGS: -pedantic -Wextra -Werror
       PREFIX: /usr/local
       OSMURL: https://download.geofabrik.de/europe/monaco-latest.osm.pbf
       OSMFILE: monaco-latest.osm.pbf
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Show installed PostgreSQL packages
         run: apt-cache search postgresql | sort
@@ -38,8 +38,7 @@ jobs:
           sudo apt-get purge -yq postgresql*
           sudo apt-get update -qq
           sudo apt-get install -yq --no-install-suggests --no-install-recommends \
-            libboost-filesystem-dev \
-            libboost-system-dev \
+            libboost-dev \
             libbz2-dev \
             libexpat1-dev \
             liblua${LUA_VERSION}-dev \
@@ -79,6 +78,7 @@ jobs:
         run: |
           test -d $PREFIX/bin
           test -e $PREFIX/bin/osm2pgsql
+          test -e $PREFIX/bin/osm2pgsql-expire
           test -e $PREFIX/bin/osm2pgsql-replication
           test -d $PREFIX/share/man/man1
           test -f $PREFIX/share/man/man1/osm2pgsql.1

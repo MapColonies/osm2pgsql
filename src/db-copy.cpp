@@ -3,19 +3,24 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
-#include <cassert>
-
 #include "db-copy.hpp"
+
 #include "format.hpp"
 #include "logging.hpp"
 #include "pgsql.hpp"
 
+#include <cassert>
+#include <cstdlib>
+#include <iterator>
+#include <stdexcept>
+
 void db_deleter_by_id_t::delete_rows(std::string const &table,
-                                     std::string const &column, pg_conn_t *conn)
+                                     std::string const &column,
+                                     pg_conn_t const &db_connection)
 {
     fmt::memory_buffer sql;
     // Each deletable contributes an OSM ID and a comma. The highest node ID
@@ -26,18 +31,18 @@ void db_deleter_by_id_t::delete_rows(std::string const &table,
     fmt::format_to(std::back_inserter(sql),
                    FMT_STRING("DELETE FROM {} WHERE {} IN ("), table, column);
 
-    for (auto id : m_deletables) {
+    for (auto const id : m_deletables) {
         format_to(std::back_inserter(sql), FMT_STRING("{},"), id);
     }
     sql[sql.size() - 1] = ')';
 
     sql.push_back('\0');
-    conn->exec(sql.data());
+    db_connection.exec(sql.data());
 }
 
 void db_deleter_by_type_and_id_t::delete_rows(std::string const &table,
                                               std::string const &column,
-                                              pg_conn_t *conn)
+                                              pg_conn_t const &db_connection)
 {
     assert(!m_deletables.empty());
 
@@ -78,70 +83,70 @@ void db_deleter_by_type_and_id_t::delete_rows(std::string const &table,
     }
 
     sql.push_back('\0');
-    conn->exec(sql.data());
+    db_connection.exec(sql.data());
 }
 
-db_copy_thread_t::db_copy_thread_t(std::string const &conninfo)
+db_copy_thread_t::db_copy_thread_t(connection_params_t const &connection_params)
 {
-    // conninfo is captured by copy here, because we don't know wether the
-    // reference will still be valid once we get around to running the thread
-    m_worker = std::thread{thread_t{conninfo, &m_shared}};
+    m_worker =
+        std::thread{thread_t{pg_conn_t{connection_params, "copy"}, &m_shared}};
 }
 
 db_copy_thread_t::~db_copy_thread_t() { finish(); }
 
-void db_copy_thread_t::add_buffer(std::unique_ptr<db_cmd_t> &&buffer)
+void db_copy_thread_t::send_command(db_cmd_t &&buffer)
 {
     assert(m_worker.joinable()); // thread must not have been finished
 
     std::unique_lock<std::mutex> lock{m_shared.queue_mutex};
     m_shared.queue_full_cond.wait(lock, [&] {
-        return m_shared.worker_queue.size() < db_cmd_copy_t::Max_buffers;
+        return m_shared.worker_queue.size() < db_cmd_copy_t::MAX_BUFFERS;
     });
 
     m_shared.worker_queue.push_back(std::move(buffer));
     m_shared.queue_cond.notify_one();
 }
 
+void db_copy_thread_t::end_copy()
+{
+    send_command(db_cmd_end_copy_t{});
+}
+
 void db_copy_thread_t::sync_and_wait()
 {
     std::promise<void> barrier;
     std::future<void> const sync = barrier.get_future();
-    add_buffer(std::make_unique<db_cmd_sync_t>(std::move(barrier)));
+    send_command(db_cmd_sync_t{std::move(barrier)});
     sync.wait();
 }
 
 void db_copy_thread_t::finish()
 {
     if (m_worker.joinable()) {
-        add_buffer(std::make_unique<db_cmd_finish_t>());
+        send_command(db_cmd_finish_t{});
         m_worker.join();
     }
 }
 
-db_copy_thread_t::thread_t::thread_t(std::string conninfo, shared *shared)
-: m_conninfo(std::move(conninfo)), m_shared(shared)
+db_copy_thread_t::thread_t::thread_t(pg_conn_t &&db_connection,
+                                     shared *shared)
+: m_db_connection(std::move(db_connection)), m_shared(shared)
 {}
 
 void db_copy_thread_t::thread_t::operator()()
 {
     try {
-        m_conn = std::make_unique<pg_conn_t>(m_conninfo);
-
-        // Let commits happen faster by delaying when they actually occur.
-        m_conn->exec("SET synchronous_commit = off");
-
         // Disable sequential scan on database tables in the copy threads.
         // The copy threads only do COPYs (which are unaffected by this
         // setting) and DELETEs which we know benefit from the index. For
         // some reason PostgreSQL chooses in some cases not to use that index,
         // possibly because the DELETEs get a large list of ids to delete of
         // which many are not in the table which confuses the query planner.
-        m_conn->exec("SET enable_seqscan = off");
+        m_db_connection.exec("SET enable_seqscan = off");
 
         bool done = false;
         while (!done) {
-            std::unique_ptr<db_cmd_t> item;
+            db_cmd_t item{};
             {
                 std::unique_lock<std::mutex> lock{m_shared->queue_mutex};
                 m_shared->queue_cond.wait(
@@ -152,43 +157,50 @@ void db_copy_thread_t::thread_t::operator()()
                 m_shared->queue_full_cond.notify_one();
             }
 
-            switch (item->type) {
-            case db_cmd_t::Cmd_copy:
-                write_to_db(static_cast<db_cmd_copy_t *>(item.get()));
-                break;
-            case db_cmd_t::Cmd_sync:
-                finish_copy();
-                static_cast<db_cmd_sync_t *>(item.get())->barrier.set_value();
-                break;
-            case db_cmd_t::Cmd_finish:
-                done = true;
-                break;
-            }
+            done = std::visit(
+                [&](auto &&cmd) {
+                    return execute(std::forward<decltype(cmd)>(cmd));
+                },
+                item);
         }
 
         finish_copy();
-
-        m_conn.reset();
     } catch (std::runtime_error const &e) {
         log_error("DB copy thread failed: {}", e.what());
         std::exit(2); // NOLINT(concurrency-mt-unsafe)
     }
 }
 
-void db_copy_thread_t::thread_t::write_to_db(db_cmd_copy_t *buffer)
+template <typename DELETER>
+bool db_copy_thread_t::thread_t::execute(db_cmd_copy_delete_t<DELETER> &cmd)
 {
-    if (buffer->has_deletables() ||
-        (m_inflight && !buffer->target->same_copy_target(*m_inflight))) {
+    if (cmd.has_deletables() ||
+        (m_inflight && !cmd.target->same_copy_target(*m_inflight))) {
         finish_copy();
     }
 
-    buffer->delete_data(m_conn.get());
+    cmd.delete_data(m_db_connection);
 
     if (!m_inflight) {
-        start_copy(buffer->target);
+        start_copy(cmd.target);
     }
 
-    m_conn->copy_send(buffer->buffer, buffer->target->name());
+    m_db_connection.copy_send(cmd.buffer, cmd.target->name());
+
+    return false;
+}
+
+bool db_copy_thread_t::thread_t::execute(db_cmd_end_copy_t &)
+{
+    finish_copy();
+    return false;
+}
+
+bool db_copy_thread_t::thread_t::execute(db_cmd_sync_t &cmd)
+{
+    finish_copy();
+    cmd.barrier.set_value();
+    return false;
 }
 
 void db_copy_thread_t::thread_t::start_copy(
@@ -209,7 +221,7 @@ void db_copy_thread_t::thread_t::start_copy(
     }
 
     sql.push_back('\0');
-    m_conn->copy_start(sql.data());
+    m_db_connection.copy_start(to_string(sql));
 
     m_inflight = target;
 }
@@ -217,7 +229,7 @@ void db_copy_thread_t::thread_t::start_copy(
 void db_copy_thread_t::thread_t::finish_copy()
 {
     if (m_inflight) {
-        m_conn->copy_end(m_inflight->name());
+        m_db_connection.copy_end(m_inflight->name());
         m_inflight.reset();
     }
 }

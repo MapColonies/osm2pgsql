@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,15 +12,19 @@
 #include "common-import.hpp"
 #include "common-options.hpp"
 
-static testing::db::import_t db;
+namespace {
 
-static char const *const conf_file = "test_output_flex.lua";
+testing::db::import_t db;
+
+char const *const CONF_FILE = "test_output_flex.lua";
+
+} // anonymous namespace
 
 struct options_slim_default
 {
     static options_t options()
     {
-        return testing::opt_t().slim().flex(conf_file);
+        return testing::opt_t().slim().flex(CONF_FILE);
     }
 };
 
@@ -28,7 +32,7 @@ struct options_slim_latlon
 {
     static options_t options()
     {
-        return testing::opt_t().slim().flex(conf_file).srs(PROJ_LATLONG);
+        return testing::opt_t().slim().flex(CONF_FILE).srs(PROJ_LATLONG);
     }
 };
 

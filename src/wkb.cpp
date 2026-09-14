@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -19,7 +19,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <utility>
 
 namespace ewkb {
 
@@ -174,7 +173,7 @@ void write_collection(std::string *data, geom::collection_t const &geom,
 
     for (auto const &item : geom) {
         item.visit(overloaded{
-            [&](geom::nullgeom_t const & /*input*/) {},
+            [](geom::nullgeom_t const & /*input*/) {},
             [&](geom::point_t const &input) { write_point(data, input); },
             [&](geom::linestring_t const &input) {
                 write_linestring(data, input);
@@ -195,10 +194,10 @@ void write_collection(std::string *data, geom::collection_t const &geom,
     }
 }
 
-class make_ewkb_visitor
+class make_ewkb_visitor_t
 {
 public:
-    make_ewkb_visitor(uint32_t srid, bool ensure_multi) noexcept
+    make_ewkb_visitor_t(uint32_t srid, bool ensure_multi) noexcept
     : m_srid(srid), m_ensure_multi(ensure_multi)
     {}
 
@@ -209,6 +208,10 @@ public:
 
     std::string operator()(geom::point_t const &geom) const
     {
+        constexpr std::size_t SIZE_POINT_HEADER_WITH_SRID = 1UL + 4UL + 4UL;
+        constexpr std::size_t SIZE_POINT =
+            SIZE_POINT_HEADER_WITH_SRID + SIZE_COORDINATE_PAIR;
+
         std::string data;
 
         if (m_ensure_multi) {
@@ -216,11 +219,9 @@ public:
             write_length(&data, 1);
             write_point(&data, geom);
         } else {
-            // 9 byte header plus one set of coordinates
-            constexpr const std::size_t size = 9 + 2 * 8;
-            data.reserve(size);
+            data.reserve(SIZE_POINT);
             write_point(&data, geom, m_srid);
-            assert(data.size() == size);
+            assert(data.size() == SIZE_POINT);
         }
 
         return data;
@@ -228,18 +229,27 @@ public:
 
     std::string operator()(geom::linestring_t const &geom) const
     {
+        constexpr std::size_t SIZE_HEADER_WITH_COUNT = 1UL + 4UL + 4UL;
+        constexpr std::size_t SIZE_HEADER_WITH_COUNT_AND_SRID =
+            SIZE_HEADER_WITH_COUNT + 4UL;
+
         std::string data;
 
+        std::size_t const coords_size = geom.size() * SIZE_COORDINATE_PAIR;
+
         if (m_ensure_multi) {
-            // Two 13 bytes headers plus n sets of coordinates
-            data.reserve(2UL * 13UL + geom.size() * (2UL * 8UL));
+            data.reserve(SIZE_HEADER_WITH_COUNT_AND_SRID +
+                         SIZE_HEADER_WITH_COUNT + coords_size);
             write_header(&data, wkb_multi_line, m_srid);
             write_length(&data, 1);
             write_linestring(&data, geom);
+            assert(data.size() == SIZE_HEADER_WITH_COUNT_AND_SRID +
+                                      SIZE_HEADER_WITH_COUNT + coords_size);
         } else {
-            // 13 byte header plus n sets of coordinates
-            data.reserve(13UL + geom.size() * (2UL * 8UL));
+            data.reserve(SIZE_HEADER_WITH_COUNT_AND_SRID + coords_size);
             write_linestring(&data, geom, m_srid);
+            assert(data.size() ==
+                   SIZE_HEADER_WITH_COUNT_AND_SRID + coords_size);
         }
 
         return data;
@@ -289,10 +299,12 @@ public:
     }
 
 private:
+    static constexpr std::size_t SIZE_COORDINATE_PAIR = 2UL * sizeof(double);
+
     uint32_t m_srid;
     bool m_ensure_multi;
 
-}; // class make_ewkb_visitor
+}; // class make_ewkb_visitor_t
 
 /**
  * Parser for (E)WKB.
@@ -560,7 +572,7 @@ private:
 
 std::string geom_to_ewkb(geom::geometry_t const &geom, bool ensure_multi)
 {
-    return geom.visit(ewkb::make_ewkb_visitor{
+    return geom.visit(ewkb::make_ewkb_visitor_t{
         static_cast<uint32_t>(geom.srid()), ensure_multi});
 }
 
@@ -574,39 +586,4 @@ geom::geometry_t ewkb_to_geom(std::string_view wkb)
     }
 
     return geom;
-}
-
-static constexpr std::array<char, 256> const hex_table = {
-    0, 0, 0, 0,   0, 0, 0, 0,   0, 0, 0, 0,   0, 0, 0, 0,
-    0, 0, 0, 0,   0, 0, 0, 0,   0, 0, 0, 0,   0, 0, 0, 0,
-    0, 0, 0, 0,   0, 0, 0, 0,   0, 0, 0, 0,   0, 0, 0, 0,
-    0, 1, 2, 3,   4, 5, 6, 7,   8, 9, 0, 0,   0, 0, 0, 0,
-
-    0, 10, 11, 12,   13, 14, 15, 0,   0, 0, 0, 0,   0, 0, 0, 0,
-    0,  0,  0,  0,    0,  0,  0, 0,   0, 0, 0, 0,   0, 0, 0, 0,
-    0, 10, 11, 12,   13, 14, 15, 0,   0, 0, 0, 0,   0, 0, 0, 0,
-};
-
-unsigned char decode_hex_char(char c) noexcept
-{
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-constant-array-index)
-    return hex_table[static_cast<std::size_t>(static_cast<unsigned char>(c))];
-}
-
-std::string decode_hex(std::string_view hex_string)
-{
-    if (hex_string.size() % 2 != 0) {
-        throw std::runtime_error{"Invalid wkb: Not a valid hex string"};
-    }
-
-    std::string wkb;
-    wkb.reserve(hex_string.size() / 2);
-
-    // NOLINTNEXTLINE(llvm-qualified-auto, readability-qualified-auto)
-    for (auto hex = hex_string.begin(); hex != hex_string.end();) {
-        unsigned int const c = decode_hex_char(*hex++);
-        wkb += static_cast<char>((c << 4U) | decode_hex_char(*hex++));
-    }
-
-    return wkb;
 }

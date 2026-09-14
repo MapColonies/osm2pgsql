@@ -6,21 +6,25 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
-#include "expire-tiles.hpp"
 #include "flex-table.hpp"
 
 #include <lua.hpp>
 
 #include <stdexcept>
+#include <string>
+#include <vector>
 
-class not_null_exception : public std::runtime_error
+class expire_tiles_t;
+class geometry_cache_t;
+
+class not_null_exception_t : public std::runtime_error
 {
 public:
-    not_null_exception(std::string const &message,
+    not_null_exception_t(std::string const &message,
                        flex_table_column_t const *column)
     : std::runtime_error(message), m_column(column)
     {}
@@ -29,16 +33,10 @@ public:
 
 private:
     flex_table_column_t const *m_column;
-}; // class not_null_exception
+}; // class not_null_exception_t
 
-void flex_write_column(lua_State *lua_state,
+void flex_write_column(lua_State *lua_state, geometry_cache_t *geom_cache,
                        db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
-                       flex_table_column_t const &column,
-                       std::vector<expire_tiles> *expire);
-
-void flex_write_row(lua_State *lua_state, table_connection_t *table_connection,
-                    osmium::item_type id_type, osmid_t id,
-                    geom::geometry_t const &geom, int srid,
-                    std::vector<expire_tiles> *expire);
+                       flex_table_column_t const &column);
 
 #endif // OSM2PGSQL_FLEX_WRITE_HPP

@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -165,4 +165,3 @@ TEST_CASE("json writer with even stranger chars in string", "[NoDB]")
     writer.string("abc-\x01-\x1f-abc");
     REQUIRE(writer.json() == "\"abc-\\u0001-\\u001f-abc\"");
 }
-

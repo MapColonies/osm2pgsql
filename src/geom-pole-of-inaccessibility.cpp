@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -15,7 +15,6 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <iostream>
 #include <queue>
 
 /**
@@ -39,9 +38,11 @@
 
 namespace geom {
 
+namespace {
+
 /// Get squared distance from a point p to a segment (a, b).
-static double point_to_segment_distance_squared(point_t p, point_t a, point_t b,
-                                                double stretch) noexcept
+double point_to_segment_distance_squared(point_t p, point_t a, point_t b,
+                                         double stretch) noexcept
 {
     double x = a.x();
     double y = a.y() * stretch;
@@ -68,9 +69,9 @@ static double point_to_segment_distance_squared(point_t p, point_t a, point_t b,
 }
 
 /// Get squared distance from a point p to ring.
-static bool point_to_ring_distance_squared(point_t point, ring_t const &ring,
-                                           bool inside, double stretch,
-                                           double *min_dist_squared) noexcept
+bool point_to_ring_distance_squared(point_t point, ring_t const &ring,
+                                    bool inside, double stretch,
+                                    double *min_dist_squared) noexcept
 {
     std::size_t const len = ring.size();
 
@@ -86,11 +87,9 @@ static bool point_to_ring_distance_squared(point_t point, ring_t const &ring,
             inside = !inside;
         }
 
-        double const d =
+        double const dist_squared =
             point_to_segment_distance_squared(point, a, b, stretch);
-        if (d < *min_dist_squared) {
-            *min_dist_squared = d;
-        }
+        *min_dist_squared = std::min(dist_squared, *min_dist_squared);
     }
 
     return inside;
@@ -100,8 +99,8 @@ static bool point_to_ring_distance_squared(point_t point, ring_t const &ring,
  * Signed distance from point to polygon boundary. The result is negative if
  * the point is outside.
  */
-static auto point_to_polygon_distance(point_t point, polygon_t const &polygon,
-                                      double stretch)
+auto point_to_polygon_distance(point_t point, polygon_t const &polygon,
+                               double stretch)
 {
     double min_dist_squared = std::numeric_limits<double>::infinity();
 
@@ -116,32 +115,29 @@ static auto point_to_polygon_distance(point_t point, polygon_t const &polygon,
     return (inside ? 1 : -1) * std::sqrt(min_dist_squared);
 }
 
-namespace {
-
-struct Cell
+struct cell_t
 {
-    static constexpr double const SQRT2 = 1.4142135623730951;
+    static constexpr double SQRT2 = 1.4142135623730951;
 
-    Cell(point_t c, double h, polygon_t const &polygon, double stretch)
+    cell_t(point_t c, double h, polygon_t const &polygon, double stretch)
     : center(c), half_size(h),
       dist(point_to_polygon_distance(center, polygon, stretch)),
       max(dist + half_size * SQRT2)
-    {}
+    {
+    }
 
     point_t center;   // cell center
     double half_size; // half the cell size
     double dist;      // distance from cell center to polygon
     double max;       // max distance to polygon within a cell
 
-    friend bool operator<(Cell const &a, Cell const &b) noexcept
+    friend bool operator<(cell_t const &a, cell_t const &b) noexcept
     {
         return a.max < b.max;
     }
 };
 
-} // anonymous namespace
-
-static Cell make_centroid_cell(polygon_t const &polygon, double stretch)
+cell_t make_centroid_cell(polygon_t const &polygon, double stretch)
 {
     point_t centroid{0, 0};
     boost::geometry::centroid(polygon, centroid);
@@ -149,7 +145,9 @@ static Cell make_centroid_cell(polygon_t const &polygon, double stretch)
     return {centroid, 0, polygon, stretch};
 }
 
-point_t pole_of_inaccessibility(const polygon_t &polygon, double precision,
+} // anonymous namespace
+
+point_t pole_of_inaccessibility(polygon_t const &polygon, double precision,
                                 double stretch)
 {
     assert(stretch > 0);
@@ -158,9 +156,7 @@ point_t pole_of_inaccessibility(const polygon_t &polygon, double precision,
 
     double const min_precision =
         std::max(envelope.width(), envelope.height()) / 1000.0;
-    if (min_precision > precision) {
-        precision = min_precision;
-    }
+    precision = std::max(min_precision, precision);
 
     box_t const stretched_envelope{envelope.min_x(), envelope.min_y() * stretch,
                                    envelope.max_x(),
@@ -170,7 +166,7 @@ point_t pole_of_inaccessibility(const polygon_t &polygon, double precision,
         return envelope.min();
     }
 
-    std::priority_queue<Cell, std::vector<Cell>> cell_queue;
+    std::priority_queue<cell_t, std::vector<cell_t>> cell_queue;
 
     // cover polygon with initial cells
     if (stretched_envelope.width() == stretched_envelope.height()) {
@@ -205,7 +201,7 @@ point_t pole_of_inaccessibility(const polygon_t &polygon, double precision,
     auto best_cell = make_centroid_cell(polygon, stretch);
 
     // second guess: bounding box centroid
-    Cell const bbox_cell{stretched_envelope.center(), 0, polygon, stretch};
+    cell_t const bbox_cell{stretched_envelope.center(), 0, polygon, stretch};
     if (bbox_cell.dist > best_cell.dist) {
         best_cell = bbox_cell;
     }
@@ -229,10 +225,10 @@ point_t pole_of_inaccessibility(const polygon_t &polygon, double precision,
         auto const h = cell.half_size / 2.0;
         auto const center = cell.center;
 
-        for (auto dy : {-h, h}) {
-            for (auto dx : {-h, h}) {
-                Cell const c{point_t{center.x() + dx, center.y() + dy}, h,
-                             polygon, stretch};
+        for (auto const dy : {-h, h}) {
+            for (auto const dx : {-h, h}) {
+                cell_t const c{point_t{center.x() + dx, center.y() + dy}, h,
+                               polygon, stretch};
                 if (c.max > best_cell.dist) {
                     cell_queue.push(c);
                 }

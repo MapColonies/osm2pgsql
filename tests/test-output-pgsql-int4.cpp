@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -14,13 +14,17 @@
 
 #include <string>
 
-static testing::db::import_t db;
+namespace {
 
-static std::string population(osmid_t id)
+testing::db::import_t db;
+
+std::string population(osmid_t id)
 {
     return "SELECT population FROM osm2pgsql_test_point WHERE osm_id = " +
            std::to_string(id);
 }
+
+} // anonymous namespace
 
 TEST_CASE("int4 conversion")
 {
@@ -40,7 +44,7 @@ TEST_CASE("int4 conversion")
     CHECK(2147483647 == conn.result_as_int(population(4)));
     CHECK(10000 == conn.result_as_int(population(5)));
     CHECK(-10000 == conn.result_as_int(population(6)));
-    CHECK(-2147483648 == conn.result_as_int(population(7)));
+    CHECK((-2147483647 - 1) == conn.result_as_int(population(7)));
 
     // More out of range negative values
     conn.assert_null(population(8));
@@ -55,7 +59,7 @@ TEST_CASE("int4 conversion")
     CHECK(2147483647 == conn.result_as_int(population(13)));
     CHECK(15000 == conn.result_as_int(population(14)));
     CHECK(-15000 == conn.result_as_int(population(15)));
-    CHECK(-2147483648 == conn.result_as_int(population(16)));
+    CHECK((-2147483647 - 1) == conn.result_as_int(population(16)));
 
     // More out of range negative values
     conn.assert_null(population(17));

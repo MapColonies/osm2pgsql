@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -22,11 +22,13 @@ TEST_CASE("polygon geometry without inner", "[NoDB]")
     geom::geometry_t const geom{
         geom::polygon_t{geom::ring_t{{0, 0}, {0, 1}, {1, 1}, {1, 0}, {0, 0}}}};
 
+    REQUIRE(geom.n_points() == 5);
     REQUIRE(dimension(geom) == 2);
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(1.0));
-    REQUIRE(spherical_area(geom) == Approx(12364031798.5));
+    REQUIRE(spherical_area(geom) == Approx(12308778361.469454).epsilon(0.00001));
     REQUIRE(length(geom) == Approx(0.0));
+    REQUIRE(spherical_length(geom) == Approx(0.0));
     REQUIRE(geometry_type(geom) == "POLYGON");
     REQUIRE(centroid(geom) == geom::geometry_t{geom::point_t{0.5, 0.5}});
     REQUIRE(geometry_n(geom, 1) == geom);
@@ -38,10 +40,11 @@ TEST_CASE("polygon geometry without inner (reverse)", "[NoDB]")
     geom::geometry_t const geom{
         geom::polygon_t{geom::ring_t{{0, 0}, {1, 0}, {1, 1}, {0, 1}, {0, 0}}}};
 
+    REQUIRE(geom.n_points() == 5);
     REQUIRE(dimension(geom) == 2);
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(1.0));
-    REQUIRE(spherical_area(geom) == Approx(12364031798.5));
+    REQUIRE(spherical_area(geom) == Approx(12308778361.469454).epsilon(0.00001));
     REQUIRE(length(geom) == Approx(0.0));
     REQUIRE(geometry_type(geom) == "POLYGON");
     REQUIRE(centroid(geom) == geom::geometry_t{geom::point_t{0.5, 0.5}});
@@ -62,10 +65,11 @@ TEST_CASE("geom::polygon_t", "[NoDB]")
     REQUIRE(polygon.inners().size() == 1);
 
     geom::geometry_t const geom{std::move(polygon)};
+    REQUIRE(geom.n_points() == 10);
     REQUIRE(dimension(geom) == 2);
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(8.0));
-    REQUIRE(spherical_area(geom) == Approx(98893356298.4));
+    REQUIRE(spherical_area(geom) == Approx(98452667625.52686).epsilon(0.00001));
     REQUIRE(length(geom) == Approx(0.0));
     REQUIRE(geometry_type(geom) == "POLYGON");
     REQUIRE(centroid(geom) == geom::geometry_t{geom::point_t{1.5, 1.5}});
@@ -85,7 +89,9 @@ TEST_CASE("create_polygon from OSM data", "[NoDB]")
     test_buffer_t buffer;
     buffer.add_way("w20 Nn1x1y1,n2x2y1,n3x2y2,n4x1y2,n1x1y1");
 
-    auto const geom = geom::create_polygon(buffer.buffer().get<osmium::Way>(0));
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_polygon(buffer.buffer().get<osmium::Way>(0), &area_buffer);
 
     REQUIRE(geom.is_polygon());
     REQUIRE(geometry_type(geom) == "POLYGON");
@@ -104,7 +110,9 @@ TEST_CASE("create_polygon from OSM data (reverse)", "[NoDB]")
     test_buffer_t buffer;
     buffer.add_way("w20 Nn1x1y1,n2x1y2,n3x2y2,n4x2y1,n1x1y1");
 
-    auto const geom = geom::create_polygon(buffer.buffer().get<osmium::Way>(0));
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_polygon(buffer.buffer().get<osmium::Way>(0), &area_buffer);
 
     REQUIRE(geom.is_polygon());
     REQUIRE(geometry_type(geom) == "POLYGON");
@@ -122,7 +130,9 @@ TEST_CASE("create_polygon from OSM data without locations", "[NoDB]")
     test_buffer_t buffer;
     buffer.add_way("w20 Nn1,n2,n3,n1");
 
-    auto const geom = geom::create_polygon(buffer.buffer().get<osmium::Way>(0));
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_polygon(buffer.buffer().get<osmium::Way>(0), &area_buffer);
 
     REQUIRE(geom.is_null());
 }
@@ -132,7 +142,9 @@ TEST_CASE("create_polygon from invalid OSM data (single node)", "[NoDB]")
     test_buffer_t buffer;
     buffer.add_way("w20 Nn1x1y1");
 
-    auto const geom = geom::create_polygon(buffer.buffer().get<osmium::Way>(0));
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_polygon(buffer.buffer().get<osmium::Way>(0), &area_buffer);
 
     REQUIRE(geom.is_null());
 }
@@ -142,7 +154,9 @@ TEST_CASE("create_polygon from invalid OSM data (way node closed)", "[NoDB]")
     test_buffer_t buffer;
     buffer.add_way("w20 Nn1x1y1,n2x2y2");
 
-    auto const geom = geom::create_polygon(buffer.buffer().get<osmium::Way>(0));
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_polygon(buffer.buffer().get<osmium::Way>(0), &area_buffer);
 
     REQUIRE(geom.is_null());
 }
@@ -152,7 +166,9 @@ TEST_CASE("create_polygon from invalid OSM data (self-intersection)", "[NoDB]")
     test_buffer_t buffer;
     buffer.add_way("w20 Nn1x1y1,n2x1y2,n3x2y1,n4x2y2,n1x1y1");
 
-    auto const geom = geom::create_polygon(buffer.buffer().get<osmium::Way>(0));
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_polygon(buffer.buffer().get<osmium::Way>(0), &area_buffer);
 
     REQUIRE(geom.is_null());
 }

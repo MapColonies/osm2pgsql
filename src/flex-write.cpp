@@ -3,16 +3,19 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "flex-lua-geom.hpp"
+#include "flex-table-column.hpp"
 #include "flex-write.hpp"
 #include "geom-functions.hpp"
 #include "json-writer.hpp"
 #include "lua-utils.hpp"
 #include "wkb.hpp"
+
+#include <osmium/osm/timestamp.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -22,7 +25,9 @@
 #include <limits>
 #include <vector>
 
-static int sgn(double val) noexcept
+namespace {
+
+int sgn(double val) noexcept
 {
     if (val > 0) {
         return 1;
@@ -33,11 +38,11 @@ static int sgn(double val) noexcept
     return 0;
 }
 
-static void write_null(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
-                       flex_table_column_t const &column)
+void write_null(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
+                flex_table_column_t const &column)
 {
     if (column.not_null()) {
-        throw not_null_exception{
+        throw not_null_exception_t{
             fmt::format("Can not add NULL to column '{}' declared NOT NULL.",
                         column.name()),
             &column};
@@ -45,8 +50,8 @@ static void write_null(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
     copy_mgr->add_null_column();
 }
 
-static void write_boolean(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
-                          flex_table_column_t const &column, char const *str)
+void write_boolean(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
+                   flex_table_column_t const &column, char const *str)
 {
     if ((std::strcmp(str, "yes") == 0) || (std::strcmp(str, "true") == 0) ||
         std::strcmp(str, "1") == 0) {
@@ -63,9 +68,8 @@ static void write_boolean(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
     write_null(copy_mgr, column);
 }
 
-static void
-write_direction(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
-                flex_table_column_t const &column, char const *str)
+void write_direction(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
+                     flex_table_column_t const &column, char const *str)
 {
     if ((std::strcmp(str, "yes") == 0) || (std::strcmp(str, "1") == 0)) {
         copy_mgr->add_column(1);
@@ -112,8 +116,8 @@ void write_integer(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
     write_null(copy_mgr, column);
 }
 
-static void write_double(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
-                         flex_table_column_t const &column, char const *str)
+void write_double(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
+                  flex_table_column_t const &column, char const *str)
 {
     if (*str == '\0') {
         write_null(copy_mgr, column);
@@ -133,11 +137,11 @@ static void write_double(db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
 
 using table_register_type = std::vector<void const *>;
 
-static void write_json(json_writer_t *writer, lua_State *lua_state,
-                       table_register_type *tables);
+void write_json(json_writer_t *writer, lua_State *lua_state,
+                table_register_type *tables);
 
-static void write_json_table(json_writer_t *writer, lua_State *lua_state,
-                             table_register_type *tables)
+void write_json_table(json_writer_t *writer, lua_State *lua_state,
+                      table_register_type *tables)
 {
     void const *table_ptr = lua_topointer(lua_state, -1);
     assert(table_ptr);
@@ -176,7 +180,7 @@ static void write_json_table(json_writer_t *writer, lua_State *lua_state,
     }
 }
 
-static void write_json_number(json_writer_t *writer, lua_State *lua_state)
+void write_json_number(json_writer_t *writer, lua_State *lua_state)
 {
 #if LUA_VERSION_NUM >= 503
     int okay = 0;
@@ -197,8 +201,8 @@ static void write_json_number(json_writer_t *writer, lua_State *lua_state)
 #endif
 }
 
-static void write_json(json_writer_t *writer, lua_State *lua_state,
-                       table_register_type *tables)
+void write_json(json_writer_t *writer, lua_State *lua_state,
+                table_register_type *tables)
 {
     assert(writer);
     assert(lua_state);
@@ -226,8 +230,8 @@ static void write_json(json_writer_t *writer, lua_State *lua_state,
     }
 }
 
-static bool is_compatible(geom::geometry_t const &geom,
-                          table_column_type type) noexcept
+bool is_compatible(geom::geometry_t const &geom,
+                   table_column_type type) noexcept
 {
     switch (type) {
     case table_column_type::geometry:
@@ -252,19 +256,12 @@ static bool is_compatible(geom::geometry_t const &geom,
     return false;
 }
 
-void flex_write_column(lua_State *lua_state,
-                       db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
-                       flex_table_column_t const &column,
-                       std::vector<expire_tiles> *expire)
-{
-    // If there is nothing on the Lua stack, then the Lua function add_row()
-    // was called without a table parameter. In that case this column will
-    // be set to NULL.
-    if (lua_gettop(lua_state) == 0) {
-        write_null(copy_mgr, column);
-        return;
-    }
+} // anonymous namespace
 
+void flex_write_column(lua_State *lua_state, geometry_cache_t *geom_cache,
+                       db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr,
+                       flex_table_column_t const &column)
+{
     lua_getfield(lua_state, -1, column.name().c_str());
     int const ltype = lua_type(lua_state, -1);
 
@@ -352,14 +349,34 @@ void flex_write_column(lua_State *lua_state,
             throw fmt_error("Invalid type '{}' for int8 column.",
                             lua_typename(lua_state, ltype));
         }
-    } else if (column.type() == table_column_type::real) {
+    } else if (column.type() == table_column_type::real || column.type() == table_column_type::double_precision) {
         if (ltype == LUA_TNUMBER) {
             copy_mgr->add_column(lua_tonumber(lua_state, -1));
         } else if (ltype == LUA_TSTRING) {
             write_double(copy_mgr, column,
                          lua_tolstring(lua_state, -1, nullptr));
         } else {
-            throw fmt_error("Invalid type '{}' for real column.",
+            throw fmt_error("Invalid type '{}' for real/double precision column.",
+                            lua_typename(lua_state, ltype));
+        }
+    } else if (column.type() == table_column_type::timestamp) {
+        if (ltype == LUA_TNUMBER) {
+            auto const ts = osmium::Timestamp{lua_tointeger(lua_state, -1)};
+            copy_mgr->add_column(ts.to_iso());
+        } else if (ltype == LUA_TSTRING) {
+            copy_mgr->add_column(lua_tolstring(lua_state, -1, nullptr));
+        } else {
+            throw fmt_error("Invalid type '{}' for timestamp column.",
+                            lua_typename(lua_state, ltype));
+        }
+    } else if (column.type() == table_column_type::timestamptz) {
+        if (ltype == LUA_TNUMBER) {
+            auto const ts = osmium::Timestamp{lua_tointeger(lua_state, -1)};
+            copy_mgr->add_column(ts.to_iso());
+        } else if (ltype == LUA_TSTRING) {
+            copy_mgr->add_column(lua_tolstring(lua_state, -1, nullptr));
+        } else {
+            throw fmt_error("Invalid type '{}' for timestamptz column.",
                             lua_typename(lua_state, ltype));
         }
     } else if (column.type() == table_column_type::hstore) {
@@ -414,9 +431,6 @@ void flex_write_column(lua_State *lua_state,
                             lua_typename(lua_state, ltype));
         }
     } else if (column.is_geometry_column()) {
-        // If this is a geometry column, the Lua function 'insert()' was
-        // called, because for 'add_row()' geometry columns are handled
-        // earlier and 'write_column()' is not called.
         if (ltype == LUA_TUSERDATA) {
             auto const *const geom = unpack_geometry(lua_state, -1);
             if (geom && !geom->is_null()) {
@@ -431,13 +445,13 @@ void flex_write_column(lua_State *lua_state,
                      type == table_column_type::multilinestring ||
                      type == table_column_type::multipolygon);
                 if (geom->srid() == column.srid()) {
-                    column.do_expire(*geom, expire);
                     copy_mgr->add_hex_geom(geom_to_ewkb(*geom, wrap_multi));
+                    geom_cache->add_new(&column, *geom);
                 } else {
                     auto const &proj = get_projection(column.srid());
-                    auto const tgeom = geom::transform(*geom, proj);
-                    column.do_expire(tgeom, expire);
+                    auto tgeom = geom::transform(*geom, proj);
                     copy_mgr->add_hex_geom(geom_to_ewkb(tgeom, wrap_multi));
+                    geom_cache->add_new(&column, std::move(tgeom));
                 }
             } else {
                 write_null(copy_mgr, column);
@@ -446,71 +460,10 @@ void flex_write_column(lua_State *lua_state,
             throw fmt_error("Need geometry data for geometry column '{}'.",
                             column.name());
         }
-    } else if (column.type() == table_column_type::area) {
-        // If this is an area column, the Lua function 'insert()' was
-        // called, because for 'add_row()' area columns are handled
-        // earlier and 'write_column()' is not called.
-        throw std::runtime_error{"Column type 'area' not allowed with "
-                                 "'insert()'. Maybe use 'real'?"};
     } else {
         throw fmt_error("Column type {} not implemented.",
                         static_cast<uint8_t>(column.type()));
     }
 
     lua_pop(lua_state, 1);
-}
-
-void flex_write_row(lua_State *lua_state, table_connection_t *table_connection,
-                    osmium::item_type id_type, osmid_t id,
-                    geom::geometry_t const &geom, int srid,
-                    std::vector<expire_tiles> *expire)
-{
-    assert(table_connection);
-    table_connection->new_line();
-    auto *copy_mgr = table_connection->copy_mgr();
-
-    geom::geometry_t projected_geom;
-    geom::geometry_t const *output_geom = &geom;
-    if (srid && geom.srid() != srid) {
-        projected_geom = geom::transform(geom, get_projection(srid));
-        output_geom = &projected_geom;
-    }
-
-    for (auto const &column : table_connection->table()) {
-        if (column.create_only()) {
-            continue;
-        }
-        if (column.type() == table_column_type::id_type) {
-            copy_mgr->add_column(type_to_char(id_type));
-        } else if (column.type() == table_column_type::id_num) {
-            copy_mgr->add_column(id);
-        } else if (column.is_geometry_column()) {
-            assert(!geom.is_null());
-            auto const type = column.type();
-            bool const wrap_multi =
-                (type == table_column_type::multilinestring ||
-                 type == table_column_type::multipolygon);
-            copy_mgr->add_hex_geom(geom_to_ewkb(*output_geom, wrap_multi));
-        } else if (column.type() == table_column_type::area) {
-            if (geom.is_null()) {
-                write_null(copy_mgr, column);
-            } else {
-                // if srid of the area column is the same as for the geom column
-                double area = 0;
-                if (column.srid() == 4326) {
-                    area = geom::area(geom);
-                } else if (column.srid() == srid) {
-                    area = geom::area(projected_geom);
-                } else {
-                    auto const &mproj = get_projection(column.srid());
-                    area = geom::area(geom::transform(geom, mproj));
-                }
-                copy_mgr->add_column(area);
-            }
-        } else {
-            flex_write_column(lua_state, copy_mgr, column, expire);
-        }
-    }
-
-    copy_mgr->finish_line();
 }

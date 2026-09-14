@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,15 +12,19 @@
 #include "common-import.hpp"
 #include "common-options.hpp"
 
-static testing::db::import_t db;
+namespace {
 
-static char const *const conf_file = "test_output_flex.lua";
-static char const *const points = "osm2pgsql_test_point";
-static char const *const lines = "osm2pgsql_test_line";
+testing::db::import_t db;
+
+char const *const CONF_FILE = "test_output_flex.lua";
+char const *const POINT_TABLE = "osm2pgsql_test_point";
+char const *const LINE_TABLE = "osm2pgsql_test_line";
+
+} // anonymous namespace
 
 TEST_CASE("with three input files")
 {
-    options_t options = testing::opt_t().slim().flex(conf_file);
+    options_t options = testing::opt_t().slim().flex(CONF_FILE);
 
     REQUIRE_NOTHROW(
         db.run_import(options, {"n10 v1 dV x10.0 y10.0\n"
@@ -32,26 +36,26 @@ TEST_CASE("with three input files")
 
     auto conn = db.db().connect();
 
-    CHECK(1 == conn.get_count(points));
-    CHECK(2 == conn.get_count(lines));
-    CHECK(1 == conn.get_count(lines, "tags->'highway' = 'primary'"));
-    CHECK(1 == conn.get_count(lines, "tags->'highway' = 'secondary'"));
-    CHECK(1 == conn.get_count(lines, "ST_NumPoints(geom) = 3"));
-    CHECK(1 == conn.get_count(lines, "ST_NumPoints(geom) = 2"));
+    CHECK(1 == conn.get_count(POINT_TABLE));
+    CHECK(2 == conn.get_count(LINE_TABLE));
+    CHECK(1 == conn.get_count(LINE_TABLE, "tags->'highway' = 'primary'"));
+    CHECK(1 == conn.get_count(LINE_TABLE, "tags->'highway' = 'secondary'"));
+    CHECK(1 == conn.get_count(LINE_TABLE, "ST_NumPoints(geom) = 3"));
+    CHECK(1 == conn.get_count(LINE_TABLE, "ST_NumPoints(geom) = 2"));
 
     options.append = true;
 
     REQUIRE_NOTHROW(db.run_import(options, "n10 v2 dV x11.0 y11.0\n"));
 
-    CHECK(1 == conn.get_count(points));
-    CHECK(2 == conn.get_count(lines));
-    CHECK(1 == conn.get_count(lines, "ST_NumPoints(geom) = 3"));
-    CHECK(1 == conn.get_count(lines, "ST_NumPoints(geom) = 2"));
+    CHECK(1 == conn.get_count(POINT_TABLE));
+    CHECK(2 == conn.get_count(LINE_TABLE));
+    CHECK(1 == conn.get_count(LINE_TABLE, "ST_NumPoints(geom) = 3"));
+    CHECK(1 == conn.get_count(LINE_TABLE, "ST_NumPoints(geom) = 2"));
 }
 
 TEST_CASE("should use newest version of any object")
 {
-    options_t const options = testing::opt_t().slim().flex(conf_file);
+    options_t const options = testing::opt_t().slim().flex(CONF_FILE);
 
     REQUIRE_NOTHROW(
         db.run_import(options, {"n10 v1 dV x10.0 y10.0 Ta=10.1\n"
@@ -64,10 +68,10 @@ TEST_CASE("should use newest version of any object")
 
     auto conn = db.db().connect();
 
-    CHECK(4 == conn.get_count(points));
-    CHECK(1 == conn.get_count(points, "tags->'a' = '10.1'")); // both the same
-    CHECK(1 == conn.get_count(points, "tags->'a' = '11.2'"));
-    CHECK(1 == conn.get_count(points, "tags->'a' = '12.1'")); // only one
-    CHECK(1 == conn.get_count(points, "tags->'a' = '13.2'"));
+    CHECK(4 == conn.get_count(POINT_TABLE));
+    CHECK(1 == conn.get_count(POINT_TABLE, "tags->'a' = '10.1'")); // both the same
+    CHECK(1 == conn.get_count(POINT_TABLE, "tags->'a' = '11.2'"));
+    CHECK(1 == conn.get_count(POINT_TABLE, "tags->'a' = '12.1'")); // only one
+    CHECK(1 == conn.get_count(POINT_TABLE, "tags->'a' = '13.2'"));
 }
 

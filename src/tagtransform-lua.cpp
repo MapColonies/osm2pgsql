@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -24,10 +24,10 @@ lua_tagtransform_t::lua_tagtransform_t(std::string const *tag_transform_script,
                         lua_tostring(lua_state(), -1));
     }
 
-    check_lua_function_exists(node_func);
-    check_lua_function_exists(way_func);
-    check_lua_function_exists(rel_func);
-    check_lua_function_exists(rel_mem_func);
+    check_lua_function_exists(NODE_FUNC);
+    check_lua_function_exists(WAY_FUNC);
+    check_lua_function_exists(REL_FUNC);
+    check_lua_function_exists(REL_MEM_FUNC);
 }
 
 std::unique_ptr<tagtransform_t> lua_tagtransform_t::clone() const
@@ -45,10 +45,12 @@ void lua_tagtransform_t::check_lua_function_exists(char const *func_name)
     lua_pop(lua_state(), 1);
 }
 
+namespace {
+
 /**
  * Read tags from the Lua table on the stack and write them to out_tags
  */
-static void get_out_tags(lua_State *lua_state, taglist_t *out_tags)
+void get_out_tags(lua_State *lua_state, taglist_t *out_tags)
 {
     luaX_for_each(lua_state, [&]() {
         auto const key_type = lua_type(lua_state, -2);
@@ -77,18 +79,20 @@ static void get_out_tags(lua_State *lua_state, taglist_t *out_tags)
     lua_pop(lua_state, 1);
 }
 
+} // anonymous namespace
+
 bool lua_tagtransform_t::filter_tags(osmium::OSMObject const &o, bool *polygon,
                                      bool *roads, taglist_t *out_tags)
 {
     switch (o.type()) {
     case osmium::item_type::node:
-        lua_getglobal(lua_state(), node_func);
+        lua_getglobal(lua_state(), NODE_FUNC);
         break;
     case osmium::item_type::way:
-        lua_getglobal(lua_state(), way_func);
+        lua_getglobal(lua_state(), WAY_FUNC);
         break;
     case osmium::item_type::relation:
-        lua_getglobal(lua_state(), rel_func);
+        lua_getglobal(lua_state(), REL_FUNC);
         break;
     default:
         throw std::runtime_error{"Unknown OSM type."};
@@ -107,8 +111,8 @@ bool lua_tagtransform_t::filter_tags(osmium::OSMObject const &o, bool *polygon,
         taglist_t tags;
         tags.add_attributes(o);
         for (auto const &t : tags) {
-            lua_pushstring(lua_state(), t.key.c_str());
-            lua_pushstring(lua_state(), t.value.c_str());
+            luaX_pushstring(lua_state(), t.key);
+            luaX_pushstring(lua_state(), t.value);
             lua_rawset(lua_state(), -3);
             ++sz;
         }
@@ -149,13 +153,13 @@ bool lua_tagtransform_t::filter_rel_member_tags(
     bool *roads, taglist_t *out_tags)
 {
     size_t const num_members = member_roles.size();
-    lua_getglobal(lua_state(), rel_mem_func);
+    lua_getglobal(lua_state(), REL_MEM_FUNC);
 
     lua_newtable(lua_state()); /* relations key value table */
 
     for (auto const &rel_tag : rel_tags) {
-        lua_pushstring(lua_state(), rel_tag.key.c_str());
-        lua_pushstring(lua_state(), rel_tag.value.c_str());
+        luaX_pushstring(lua_state(), rel_tag.key);
+        luaX_pushstring(lua_state(), rel_tag.value);
         lua_rawset(lua_state(), -3);
     }
 

@@ -1,4 +1,4 @@
-Feature: Changes on way with expire on zoom 0
+Feature: Changes on way with expire on zoom 1
 
     Background:
         Given the style file 'test_expire.lua'
@@ -26,7 +26,6 @@ Feature: Changes on way with expire on zoom 0
             """
             w10 v1 dV Ta=b Nn10,n11
             """
-        And an empty grid
 
         When running osm2pgsql flex with parameters
             | --slim | -a |
@@ -43,7 +42,6 @@ Feature: Changes on way with expire on zoom 0
             """
             n1 v2 dV x1 y2
             """
-        And an empty grid
 
         When running osm2pgsql flex with parameters
             | --slim | -a |
@@ -60,7 +58,6 @@ Feature: Changes on way with expire on zoom 0
             """
             w10 v1 dV Tt1=yes Nn10,n11
             """
-        And an empty grid
 
         When running osm2pgsql flex with parameters
             | --slim | -a |
@@ -71,7 +68,7 @@ Feature: Changes on way with expire on zoom 0
             | 11     |
         Then table osm2pgsql_test_expire contains exactly
             | zoom | x | y |
-            | 0    | 0 | 0 |
+            | 1    | 1 | 0 |
 
 
     Scenario: change in t1
@@ -79,7 +76,6 @@ Feature: Changes on way with expire on zoom 0
             """
             w11 v2 dV Ta=b Nn10,n11
             """
-        And an empty grid
 
         When running osm2pgsql flex with parameters
             | --slim | -a |
@@ -88,7 +84,7 @@ Feature: Changes on way with expire on zoom 0
             | way_id |
         Then table osm2pgsql_test_expire contains exactly
             | zoom | x | y |
-            | 0    | 0 | 0 |
+            | 1    | 1 | 0 |
 
 
     Scenario: remove from t1
@@ -96,7 +92,6 @@ Feature: Changes on way with expire on zoom 0
             """
             w11 v2 dD
             """
-        And an empty grid
 
         When running osm2pgsql flex with parameters
             | --slim | -a |
@@ -105,4 +100,4 @@ Feature: Changes on way with expire on zoom 0
             | way_id |
         Then table osm2pgsql_test_expire contains exactly
             | zoom | x | y |
-            | 0    | 0 | 0 |
+            | 1    | 1 | 0 |

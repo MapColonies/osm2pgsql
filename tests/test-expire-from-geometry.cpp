@@ -3,31 +3,37 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include <catch.hpp>
 
-#include <random>
+#include <memory>
 #include <set>
+#include <utility>
 
 #include "expire-tiles.hpp"
+#include "projection.hpp"
 #include "reprojection.hpp"
 #include "tile-output.hpp"
 #include "tile.hpp"
 
-static std::shared_ptr<reprojection> defproj{
-    reprojection::create_projection(PROJ_SPHERE_MERC)};
+namespace {
+
+std::shared_ptr<reprojection_t> defproj{
+    reprojection_t::create_projection(PROJ_SPHERE_MERC)};
 
 // We are using zoom level 12 here, because at that level a tile is about
 // 10,000 units wide/high which gives us easy numbers to work with.
-static constexpr uint32_t const zoom = 12;
+constexpr uint32_t ZOOM = 12;
+
+} // anonymous namespace
 
 TEST_CASE("expire null geometry does nothing", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     SECTION("geom")
     {
@@ -38,8 +44,8 @@ TEST_CASE("expire null geometry does nothing", "[NoDB]")
     SECTION("geom with check")
     {
         geom::geometry_t geom{};
-        geom.set_srid(3857);
-        et.from_geometry(geom, expire_config);
+        geom.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry_if_3857(geom, expire_config);
     }
 
     REQUIRE(et.get_tiles().empty());
@@ -48,7 +54,7 @@ TEST_CASE("expire null geometry does nothing", "[NoDB]")
 TEST_CASE("expire point at tile boundary", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     geom::point_t const pt{0.0, 0.0};
 
@@ -63,22 +69,22 @@ TEST_CASE("expire point at tile boundary", "[NoDB]")
     SECTION("geom with check")
     {
         geom::geometry_t geom{pt};
-        geom.set_srid(3857);
-        et.from_geometry(geom, expire_config);
+        geom.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry_if_3857(geom, expire_config);
     }
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 4);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2047, 2047});
-    CHECK(tile_t::from_quadkey(tiles[1], zoom) == tile_t{zoom, 2048, 2047});
-    CHECK(tile_t::from_quadkey(tiles[2], zoom) == tile_t{zoom, 2047, 2048});
-    CHECK(tile_t::from_quadkey(tiles[3], zoom) == tile_t{zoom, 2048, 2048});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2047, 2047});
+    CHECK(tile_t::from_quadkey(tiles[1], ZOOM) == tile_t{ZOOM, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[2], ZOOM) == tile_t{ZOOM, 2047, 2048});
+    CHECK(tile_t::from_quadkey(tiles[3], ZOOM) == tile_t{ZOOM, 2048, 2048});
 }
 
 TEST_CASE("expire point away from tile boundary", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     geom::point_t const pt{5000.0, 5000.0};
 
@@ -93,19 +99,19 @@ TEST_CASE("expire point away from tile boundary", "[NoDB]")
     SECTION("geom with check")
     {
         geom::geometry_t geom{pt};
-        geom.set_srid(3857);
-        et.from_geometry(geom, expire_config);
+        geom.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry_if_3857(geom, expire_config);
     }
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 1);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2048, 2047});
 }
 
 TEST_CASE("expire linestring away from tile boundary", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     SECTION("line")
     {
@@ -124,19 +130,19 @@ TEST_CASE("expire linestring away from tile boundary", "[NoDB]")
     {
         geom::linestring_t line{{5000.0, 4000.0}, {5100.0, 4200.0}};
         geom::geometry_t geom{std::move(line)};
-        geom.set_srid(3857);
-        et.from_geometry(geom, expire_config);
+        geom.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry_if_3857(geom, expire_config);
     }
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 1);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2048, 2047});
 }
 
 TEST_CASE("expire linestring crossing tile boundary", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     SECTION("line")
     {
@@ -155,20 +161,20 @@ TEST_CASE("expire linestring crossing tile boundary", "[NoDB]")
     {
         geom::linestring_t line{{5000.0, 5000.0}, {5000.0, 15000.0}};
         geom::geometry_t geom{std::move(line)};
-        geom.set_srid(3857);
-        et.from_geometry(geom, expire_config);
+        geom.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry_if_3857(geom, expire_config);
     }
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 2);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2048, 2046});
-    CHECK(tile_t::from_quadkey(tiles[1], zoom) == tile_t{zoom, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2048, 2046});
+    CHECK(tile_t::from_quadkey(tiles[1], ZOOM) == tile_t{ZOOM, 2048, 2047});
 }
 
 TEST_CASE("expire small polygon", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     SECTION("polygon")
     {
@@ -199,13 +205,13 @@ TEST_CASE("expire small polygon", "[NoDB]")
                               {5000.0, 5100.0},
                               {5000.0, 5000.0}}};
         geom::geometry_t geom{std::move(poly)};
-        geom.set_srid(3857);
-        et.from_geometry(geom, expire_config);
+        geom.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry_if_3857(geom, expire_config);
     }
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 1);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2048, 2047});
 }
 
 TEST_CASE("expire large polygon as bbox", "[NoDB]")
@@ -213,7 +219,7 @@ TEST_CASE("expire large polygon as bbox", "[NoDB]")
     expire_config_t expire_config;
     expire_config.mode = expire_mode::hybrid;
     expire_config.full_area_limit = 40000;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     SECTION("polygon")
     {
@@ -244,23 +250,23 @@ TEST_CASE("expire large polygon as bbox", "[NoDB]")
                               {5000.0, 25000.0},
                               {5000.0, 5000.0}}};
         geom::geometry_t geom{std::move(poly)};
-        geom.set_srid(3857);
-        et.from_geometry(geom, expire_config);
+        geom.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry_if_3857(geom, expire_config);
     }
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 9);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2048, 2045});
-    CHECK(tile_t::from_quadkey(tiles[1], zoom) == tile_t{zoom, 2049, 2045});
-    CHECK(tile_t::from_quadkey(tiles[2], zoom) == tile_t{zoom, 2050, 2045});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2048, 2045});
+    CHECK(tile_t::from_quadkey(tiles[1], ZOOM) == tile_t{ZOOM, 2049, 2045});
+    CHECK(tile_t::from_quadkey(tiles[2], ZOOM) == tile_t{ZOOM, 2050, 2045});
 
-    CHECK(tile_t::from_quadkey(tiles[3], zoom) == tile_t{zoom, 2048, 2046});
-    CHECK(tile_t::from_quadkey(tiles[4], zoom) == tile_t{zoom, 2049, 2046});
-    CHECK(tile_t::from_quadkey(tiles[7], zoom) == tile_t{zoom, 2050, 2046});
+    CHECK(tile_t::from_quadkey(tiles[3], ZOOM) == tile_t{ZOOM, 2048, 2046});
+    CHECK(tile_t::from_quadkey(tiles[4], ZOOM) == tile_t{ZOOM, 2049, 2046});
+    CHECK(tile_t::from_quadkey(tiles[7], ZOOM) == tile_t{ZOOM, 2050, 2046});
 
-    CHECK(tile_t::from_quadkey(tiles[5], zoom) == tile_t{zoom, 2048, 2047});
-    CHECK(tile_t::from_quadkey(tiles[6], zoom) == tile_t{zoom, 2049, 2047});
-    CHECK(tile_t::from_quadkey(tiles[8], zoom) == tile_t{zoom, 2050, 2047});
+    CHECK(tile_t::from_quadkey(tiles[5], ZOOM) == tile_t{ZOOM, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[6], ZOOM) == tile_t{ZOOM, 2049, 2047});
+    CHECK(tile_t::from_quadkey(tiles[8], ZOOM) == tile_t{ZOOM, 2050, 2047});
 }
 
 TEST_CASE("expire large polygon as boundary", "[NoDB]")
@@ -268,7 +274,7 @@ TEST_CASE("expire large polygon as boundary", "[NoDB]")
     expire_config_t expire_config;
     expire_config.mode = expire_mode::hybrid;
     expire_config.full_area_limit = 10000;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     SECTION("polygon")
     {
@@ -309,28 +315,28 @@ TEST_CASE("expire large polygon as boundary", "[NoDB]")
                               {5000.0, 25000.0},
                               {5000.0, 5000.0}}};
         geom::geometry_t geom{std::move(poly)};
-        geom.set_srid(3857);
-        et.from_geometry(geom, expire_config);
+        geom.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry_if_3857(geom, expire_config);
     }
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 8);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2048, 2045});
-    CHECK(tile_t::from_quadkey(tiles[1], zoom) == tile_t{zoom, 2049, 2045});
-    CHECK(tile_t::from_quadkey(tiles[2], zoom) == tile_t{zoom, 2050, 2045});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2048, 2045});
+    CHECK(tile_t::from_quadkey(tiles[1], ZOOM) == tile_t{ZOOM, 2049, 2045});
+    CHECK(tile_t::from_quadkey(tiles[2], ZOOM) == tile_t{ZOOM, 2050, 2045});
 
-    CHECK(tile_t::from_quadkey(tiles[3], zoom) == tile_t{zoom, 2048, 2046});
-    CHECK(tile_t::from_quadkey(tiles[6], zoom) == tile_t{zoom, 2050, 2046});
+    CHECK(tile_t::from_quadkey(tiles[3], ZOOM) == tile_t{ZOOM, 2048, 2046});
+    CHECK(tile_t::from_quadkey(tiles[6], ZOOM) == tile_t{ZOOM, 2050, 2046});
 
-    CHECK(tile_t::from_quadkey(tiles[4], zoom) == tile_t{zoom, 2048, 2047});
-    CHECK(tile_t::from_quadkey(tiles[5], zoom) == tile_t{zoom, 2049, 2047});
-    CHECK(tile_t::from_quadkey(tiles[7], zoom) == tile_t{zoom, 2050, 2047});
+    CHECK(tile_t::from_quadkey(tiles[4], ZOOM) == tile_t{ZOOM, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[5], ZOOM) == tile_t{ZOOM, 2049, 2047});
+    CHECK(tile_t::from_quadkey(tiles[7], ZOOM) == tile_t{ZOOM, 2050, 2047});
 }
 
 TEST_CASE("expire multipoint geometry", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     geom::point_t const p1{0.0, 0.0};
     geom::point_t const p2{15000.0, 15000.0};
@@ -358,23 +364,23 @@ TEST_CASE("expire multipoint geometry", "[NoDB]")
         mpt.add_geometry(p1);
         mpt.add_geometry(p2);
         geom::geometry_t geom{std::move(mpt)};
-        geom.set_srid(3857);
-        et.from_geometry(geom, expire_config);
+        geom.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry_if_3857(geom, expire_config);
     }
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 5);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2047, 2047});
-    CHECK(tile_t::from_quadkey(tiles[1], zoom) == tile_t{zoom, 2049, 2046});
-    CHECK(tile_t::from_quadkey(tiles[2], zoom) == tile_t{zoom, 2048, 2047});
-    CHECK(tile_t::from_quadkey(tiles[3], zoom) == tile_t{zoom, 2047, 2048});
-    CHECK(tile_t::from_quadkey(tiles[4], zoom) == tile_t{zoom, 2048, 2048});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2047, 2047});
+    CHECK(tile_t::from_quadkey(tiles[1], ZOOM) == tile_t{ZOOM, 2049, 2046});
+    CHECK(tile_t::from_quadkey(tiles[2], ZOOM) == tile_t{ZOOM, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[3], ZOOM) == tile_t{ZOOM, 2047, 2048});
+    CHECK(tile_t::from_quadkey(tiles[4], ZOOM) == tile_t{ZOOM, 2048, 2048});
 }
 
 TEST_CASE("expire multilinestring geometry", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     geom::linestring_t l1{{2000.0, 2000.0}, {3000.0, 3000.0}};
     geom::linestring_t l2{{15000.0, 15000.0}, {25000.0, 15000.0}};
@@ -392,9 +398,9 @@ TEST_CASE("expire multilinestring geometry", "[NoDB]")
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 3);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2049, 2046});
-    CHECK(tile_t::from_quadkey(tiles[1], zoom) == tile_t{zoom, 2048, 2047});
-    CHECK(tile_t::from_quadkey(tiles[2], zoom) == tile_t{zoom, 2050, 2046});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2049, 2046});
+    CHECK(tile_t::from_quadkey(tiles[1], ZOOM) == tile_t{ZOOM, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[2], ZOOM) == tile_t{ZOOM, 2050, 2046});
 }
 
 TEST_CASE("expire multipolygon geometry", "[NoDB]")
@@ -402,7 +408,7 @@ TEST_CASE("expire multipolygon geometry", "[NoDB]")
     expire_config_t expire_config;
     expire_config.mode = expire_mode::hybrid;
     expire_config.full_area_limit = 10000;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     geom::polygon_t p1{{{2000.0, 2000.0},
                         {2000.0, 3000.0},
@@ -442,11 +448,11 @@ TEST_CASE("expire multipolygon geometry", "[NoDB]")
     }
 
     std::set<quadkey_t> expected;
-    expected.insert(tile_t{zoom, 2048, 2047}.quadkey()); // p1
+    expected.insert(tile_t{ZOOM, 2048, 2047}.quadkey()); // p1
 
     for (uint32_t x = 2049; x <= 2052; ++x) {
         for (uint32_t y = 2043; y <= 2046; ++y) {
-            expected.insert(tile_t{zoom, x, y}.quadkey()); // p2
+            expected.insert(tile_t{ZOOM, x, y}.quadkey()); // p2
         }
     }
     REQUIRE(expected == result);
@@ -455,7 +461,7 @@ TEST_CASE("expire multipolygon geometry", "[NoDB]")
 TEST_CASE("expire geometry collection", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     geom::collection_t collection;
     collection.add_geometry(geom::geometry_t{geom::point_t{0.0, 0.0}});
@@ -467,22 +473,22 @@ TEST_CASE("expire geometry collection", "[NoDB]")
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 6);
-    CHECK(tile_t::from_quadkey(tiles[0], zoom) == tile_t{zoom, 2047, 2047});
-    CHECK(tile_t::from_quadkey(tiles[1], zoom) == tile_t{zoom, 2049, 2046});
-    CHECK(tile_t::from_quadkey(tiles[2], zoom) == tile_t{zoom, 2048, 2047});
-    CHECK(tile_t::from_quadkey(tiles[3], zoom) == tile_t{zoom, 2050, 2046});
-    CHECK(tile_t::from_quadkey(tiles[4], zoom) == tile_t{zoom, 2047, 2048});
-    CHECK(tile_t::from_quadkey(tiles[5], zoom) == tile_t{zoom, 2048, 2048});
+    CHECK(tile_t::from_quadkey(tiles[0], ZOOM) == tile_t{ZOOM, 2047, 2047});
+    CHECK(tile_t::from_quadkey(tiles[1], ZOOM) == tile_t{ZOOM, 2049, 2046});
+    CHECK(tile_t::from_quadkey(tiles[2], ZOOM) == tile_t{ZOOM, 2048, 2047});
+    CHECK(tile_t::from_quadkey(tiles[3], ZOOM) == tile_t{ZOOM, 2050, 2046});
+    CHECK(tile_t::from_quadkey(tiles[4], ZOOM) == tile_t{ZOOM, 2047, 2048});
+    CHECK(tile_t::from_quadkey(tiles[5], ZOOM) == tile_t{ZOOM, 2048, 2048});
 }
 
 TEST_CASE("expire works if in 3857", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     geom::geometry_t geom{geom::point_t{0.0, 0.0}};
-    geom.set_srid(3857);
-    et.from_geometry(geom, expire_config);
+    geom.set_srid(PROJ_SPHERE_MERC);
+    et.from_geometry_if_3857(geom, expire_config);
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.size() == 4);
@@ -491,7 +497,7 @@ TEST_CASE("expire works if in 3857", "[NoDB]")
 TEST_CASE("expire doesn't do anything if not in 3857", "[NoDB]")
 {
     expire_config_t const expire_config;
-    expire_tiles et{zoom, defproj};
+    expire_tiles_t et{ZOOM, defproj};
 
     geom::geometry_t geom{geom::point_t{0.0, 0.0}};
     geom.set_srid(1234);

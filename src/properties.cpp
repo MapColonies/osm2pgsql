@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -17,14 +17,20 @@
 #include <cassert>
 #include <cstdlib>
 
-static constexpr char const *const properties_table = "osm2pgsql_properties";
+namespace {
 
-properties_t::properties_t(std::string conninfo, std::string schema)
-: m_conninfo(std::move(conninfo)), m_schema(std::move(schema)),
-  m_has_properties_table(has_table(m_schema, properties_table))
+constexpr char const *const PROPERTIES_TABLE = "osm2pgsql_properties";
+
+} // anonymous namespace
+
+properties_t::properties_t(connection_params_t connection_params,
+                           std::string schema)
+: m_connection_params(std::move(connection_params)),
+  m_schema(std::move(schema)),
+  m_has_properties_table(has_table(m_schema, PROPERTIES_TABLE))
 {
     assert(!m_schema.empty());
-    log_debug("Found properties table '{}': {}.", properties_table,
+    log_debug("Found properties table '{}': {}.", PROPERTIES_TABLE,
               m_has_properties_table);
 }
 
@@ -77,66 +83,56 @@ bool properties_t::get_bool(std::string const &property,
                     property);
 }
 
-void properties_t::set_string(std::string property, std::string value,
-                              bool update_database)
+void properties_t::set_string(std::string const &property,
+                              std::string const &value)
 {
-    auto const r =
-        m_properties.insert_or_assign(std::move(property), std::move(value));
-
-    if (!update_database || !m_has_properties_table) {
-        return;
-    }
-
-    auto const &inserted = *(r.first);
-    log_debug("  Storing {}='{}'", inserted.first, inserted.second);
-
-    pg_conn_t const db_connection{m_conninfo};
-    db_connection.exec(
-        "PREPARE set_property(text, text) AS"
-        " INSERT INTO {} (property, value) VALUES ($1, $2)"
-        " ON CONFLICT (property) DO UPDATE SET value = EXCLUDED.value",
-        table_name());
-    db_connection.exec_prepared("set_property", inserted.first,
-                                inserted.second);
+    m_properties[property] = value;
+    m_to_update[property] = value;
 }
 
-void properties_t::set_int(std::string property, int64_t value,
-                           bool update_database)
+void properties_t::set_int(std::string const &property, int64_t value)
 {
-    set_string(std::move(property), std::to_string(value), update_database);
+    set_string(property, std::to_string(value));
 }
 
-void properties_t::set_bool(std::string property, bool value,
-                            bool update_database)
+void properties_t::set_bool(std::string const &property, bool value)
 {
-    set_string(std::move(property), value ? "true" : "false", update_database);
+    set_string(property, value ? "true" : "false");
+}
+
+void properties_t::init_table()
+{
+    auto const table = table_name();
+    log_info("Initializing properties table '{}'.", table);
+
+    pg_conn_t const db_connection{m_connection_params, "prop.store"};
+    db_connection.exec("CREATE TABLE IF NOT EXISTS {} ("
+                       " property TEXT NOT NULL PRIMARY KEY,"
+                       " value TEXT NOT NULL)",
+                       table);
+    db_connection.exec("TRUNCATE {}", table);
+    m_has_properties_table = true;
 }
 
 void properties_t::store()
 {
     auto const table = table_name();
-
     log_info("Storing properties to table '{}'.", table);
-    pg_conn_t const db_connection{m_conninfo};
 
-    if (m_has_properties_table) {
-        db_connection.exec("TRUNCATE {}", table);
-    } else {
-        db_connection.exec("CREATE TABLE {} ("
-                           " property TEXT NOT NULL PRIMARY KEY,"
-                           " value TEXT NOT NULL)",
-                           table);
-        m_has_properties_table = true;
-    }
+    pg_conn_t const db_connection{m_connection_params, "prop.store"};
 
-    db_connection.exec("PREPARE set_property(text, text) AS"
-                       " INSERT INTO {} (property, value) VALUES ($1, $2)",
-                       table);
+    db_connection.prepare(
+        "set_property",
+        "INSERT INTO {} (property, value) VALUES ($1::text, $2::text)"
+        " ON CONFLICT (property) DO UPDATE SET value = EXCLUDED.value",
+        table);
 
-    for (auto const &[k, v] : m_properties) {
+    for (auto const &[k, v] : m_to_update) {
         log_debug("  Storing {}='{}'", k, v);
         db_connection.exec_prepared("set_property", k, v);
     }
+
+    m_to_update.clear();
 }
 
 bool properties_t::load()
@@ -151,7 +147,7 @@ bool properties_t::load()
     auto const table = table_name();
     log_info("Loading properties from table '{}'.", table);
 
-    pg_conn_t const db_connection{m_conninfo};
+    pg_conn_t const db_connection{m_connection_params, "prop.load"};
     auto const result = db_connection.exec("SELECT * FROM {}", table);
 
     for (int i = 0; i < result.num_tuples(); ++i) {
@@ -163,5 +159,5 @@ bool properties_t::load()
 
 std::string properties_t::table_name() const
 {
-    return qualified_name(m_schema, properties_table);
+    return qualified_name(m_schema, PROPERTIES_TABLE);
 }

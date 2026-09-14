@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,13 +12,17 @@
 #include "common-import.hpp"
 #include "common-options.hpp"
 
-static testing::db::import_t db;
+namespace {
 
-static char const *const conf_file = "test_output_flex_nodes.lua";
+testing::db::import_t db;
+
+char const *const CONF_FILE = "test_output_flex_nodes.lua";
+
+} // anonymous namespace
 
 TEST_CASE("add nodes")
 {
-    options_t options = testing::opt_t().slim().flex(conf_file);
+    options_t options = testing::opt_t().slim().flex(CONF_FILE);
 
     REQUIRE_NOTHROW(db.run_import(options,
                                   "n10 v1 dV x10.0 y10.0\n"
@@ -49,7 +53,7 @@ TEST_CASE("add nodes")
     CHECK(1 == conn.get_count("osm2pgsql_test_t1", "node_id = 17"));
 }
 
-enum class node_relationship
+enum class node_relationship : std::uint8_t
 {
     none,
     in_way,
@@ -59,7 +63,7 @@ enum class node_relationship
 template <node_relationship R>
 struct node_rel
 {
-    static constexpr const node_relationship rs = R;
+    static constexpr node_relationship RS = R;
 };
 
 using node_rel_none = node_rel<node_relationship::none>;
@@ -69,7 +73,7 @@ using node_rel_in_relation = node_rel<node_relationship::in_relation>;
 TEMPLATE_TEST_CASE("change nodes", "", node_rel_none, node_rel_in_way,
                    node_rel_in_relation)
 {
-    options_t options = testing::opt_t().slim().flex(conf_file);
+    options_t options = testing::opt_t().slim().flex(CONF_FILE);
 
     REQUIRE_NOTHROW(db.run_import(options,
                                   "n10 v1 dV x10.0 y10.0\n"
@@ -83,9 +87,9 @@ TEMPLATE_TEST_CASE("change nodes", "", node_rel_none, node_rel_in_way,
 
     options.append = true;
 
-    if (TestType{}.rs == node_relationship::in_way) {
+    if (TestType{}.RS == node_relationship::in_way) {
         REQUIRE_NOTHROW(db.run_import(options, "w20 v1 dV Nn14,n15,n16\n"));
-    } else if (TestType{}.rs == node_relationship::in_relation) {
+    } else if (TestType{}.RS == node_relationship::in_relation) {
         REQUIRE_NOTHROW(db.run_import(options, "r30 v1 dV Mn14@,n15@,n16@\n"));
     }
 
@@ -156,7 +160,7 @@ TEMPLATE_TEST_CASE("change nodes", "", node_rel_none, node_rel_in_way,
 TEMPLATE_TEST_CASE("delete nodes", "", node_rel_none, node_rel_in_way,
                    node_rel_in_relation)
 {
-    options_t options = testing::opt_t().slim().flex(conf_file);
+    options_t options = testing::opt_t().slim().flex(CONF_FILE);
 
     REQUIRE_NOTHROW(db.run_import(options,
                                   "n10 v1 dV x10.0 y10.0\n"
@@ -170,9 +174,9 @@ TEMPLATE_TEST_CASE("delete nodes", "", node_rel_none, node_rel_in_way,
 
     options.append = true;
 
-    if (TestType{}.rs == node_relationship::in_way) {
+    if (TestType{}.RS == node_relationship::in_way) {
         REQUIRE_NOTHROW(db.run_import(options, "w20 v1 dV Nn14,n15,n16\n"));
-    } else if (TestType{}.rs == node_relationship::in_relation) {
+    } else if (TestType{}.RS == node_relationship::in_relation) {
         REQUIRE_NOTHROW(db.run_import(options, "r30 v1 dV Mn14@,n15@,n16@\n"));
     }
 

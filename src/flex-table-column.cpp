@@ -3,31 +3,37 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "flex-table-column.hpp"
+
 #include "format.hpp"
+#include "geom-boost-adaptor.hpp"
+#include "overloaded.hpp"
 #include "pgsql-capabilities.hpp"
+#include "projection.hpp"
 #include "util.hpp"
 
-#include <algorithm>
-#include <array>
+#include <cassert>
 #include <cctype>
 #include <cstdlib>
 #include <stdexcept>
 #include <utility>
+#include <vector>
+
+namespace {
 
 struct column_type_lookup
 {
     char const *m_name;
-    table_column_type type;
+    table_column_type m_type;
 
     char const *name() const noexcept { return m_name; }
 };
 
-static std::array<column_type_lookup, 26> const column_types = {
+std::vector<column_type_lookup> const COLUMN_TYPES = {
     {{"text", table_column_type::text},
      {"boolean", table_column_type::boolean},
      {"bool", table_column_type::boolean},
@@ -39,6 +45,9 @@ static std::array<column_type_lookup, 26> const column_types = {
      {"int8", table_column_type::int8},
      {"bigint", table_column_type::int8},
      {"real", table_column_type::real},
+     {"double", table_column_type::double_precision},
+     {"timestamp", table_column_type::timestamp},
+     {"timestamptz", table_column_type::timestamptz},
      {"hstore", table_column_type::hstore},
      {"json", table_column_type::json},
      {"jsonb", table_column_type::jsonb},
@@ -51,27 +60,20 @@ static std::array<column_type_lookup, 26> const column_types = {
      {"multilinestring", table_column_type::multilinestring},
      {"multipolygon", table_column_type::multipolygon},
      {"geometrycollection", table_column_type::geometrycollection},
-     {"area", table_column_type::area},
      {"id_type", table_column_type::id_type},
      {"id_num", table_column_type::id_num}}};
 
-static table_column_type get_column_type_from_string(std::string const &type)
+table_column_type get_column_type_from_string(std::string const &type)
 {
-    auto const *column_type = util::find_by_name(column_types, type);
+    auto const *column_type = util::find_by_name(COLUMN_TYPES, type);
     if (!column_type) {
         throw fmt_error("Unknown column type '{}'.", type);
     }
 
-    if (column_type->type == table_column_type::area) {
-        log_warn("The 'area' column type is deprecated. Please read");
-        log_warn("https://osm2pgsql.org/doc/tutorials/"
-                 "switching-from-add-row-to-insert/");
-    }
-
-    return column_type->type;
+    return column_type->m_type;
 }
 
-static std::string lowercase(std::string const &str)
+std::string lowercase(std::string const &str)
 {
     std::string result;
 
@@ -82,6 +84,8 @@ static std::string lowercase(std::string const &str)
 
     return result;
 }
+
+} // anonymous namespace
 
 flex_table_column_t::flex_table_column_t(std::string name,
                                          std::string const &type,
@@ -107,12 +111,12 @@ void flex_table_column_t::set_projection(char const *projection)
     auto const proj = lowercase(projection);
 
     if (proj == "merc" || proj == "mercator") {
-        m_srid = 3857;
+        m_srid = PROJ_SPHERE_MERC;
         return;
     }
 
     if (proj == "latlong" || proj == "latlon" || proj == "wgs84") {
-        m_srid = 4326;
+        m_srid = PROJ_LATLONG;
         return;
     }
 
@@ -143,6 +147,12 @@ std::string flex_table_column_t::sql_type_name() const
         return "int8";
     case table_column_type::real:
         return "real";
+    case table_column_type::double_precision:
+        return "double precision";
+    case table_column_type::timestamp:
+        return "timestamp";
+    case table_column_type::timestamptz:
+        return "timestamptz";
     case table_column_type::hstore:
         return "hstore";
     case table_column_type::json:
@@ -167,8 +177,6 @@ std::string flex_table_column_t::sql_type_name() const
         return fmt::format("Geometry(MULTIPOLYGON, {})", m_srid);
     case table_column_type::geometrycollection:
         return fmt::format("Geometry(GEOMETRYCOLLECTION, {})", m_srid);
-    case table_column_type::area:
-        return "real";
     case table_column_type::id_type:
         return "char(1)";
     case table_column_type::id_num:
@@ -201,17 +209,155 @@ std::string flex_table_column_t::sql_create() const
 void flex_table_column_t::add_expire(expire_config_t const &config)
 {
     assert(is_geometry_column());
-    // assert(srid() == 3857);
+    assert(srid() == PROJ_SPHERE_MERC);
     m_expires.push_back(config);
 }
 
-void flex_table_column_t::do_expire(geom::geometry_t const &geom,
-                                    std::vector<expire_tiles> *expire) const
+namespace {
+/**
+ * When doing diff expire, we need to calculate the symmetric difference
+ * between old and new geometries. The difference is done by type, so points
+ * are compared with points, linestrings with linestrings, etc. This function
+ * separates out the input geometries by the three fundamental types.
+ */
+// NOLINTBEGIN(cppcoreguidelines-rvalue-reference-param-not-moved)
+template <typename T>
+void classify_geometries(T input_geoms, geom::multipoint_t *points,
+                         geom::multilinestring_t *linestrings,
+                         geom::multipolygon_t *polygons)
 {
+    assert(points);
+    assert(linestrings);
+    assert(polygons);
+
+    for (auto &&geom : *input_geoms) {
+        visit(overloaded{
+                  [&](geom::nullgeom_t && /*input*/) {},
+                  [&](geom::point_t &&input) { points->add_geometry(input); },
+                  [&](geom::linestring_t &&input) {
+                      linestrings->add_geometry(std::move(input));
+                  },
+                  [&](geom::polygon_t &&input) {
+                      polygons->add_geometry(std::move(input));
+                  },
+                  [&](geom::multipoint_t &&input) {
+                      for (auto &&point : input) {
+                          points->add_geometry(point);
+                      }
+                  },
+                  [&](geom::multilinestring_t &&input) {
+                      for (auto &&linestring : input) {
+                          linestrings->add_geometry(std::move(linestring));
+                      }
+                  },
+                  [&](geom::multipolygon_t &&input) {
+                      for (auto &&polygon : input) {
+                          polygons->add_geometry(std::move(polygon));
+                      }
+                  },
+                  [&](geom::collection_t &&input) {
+                      classify_geometries(&input, points, linestrings,
+                                          polygons);
+                  }},
+              std::move(geom));
+    }
+}
+// NOLINTEND(cppcoreguidelines-rvalue-reference-param-not-moved)
+
+void find_difference(std::vector<geom::geometry_t> *geoms_old,
+                     std::vector<geom::geometry_t> *geoms_new,
+                     std::vector<geom::point_t> *diff_points,
+                     std::vector<geom::linestring_t> *diff_linestrings,
+                     std::vector<geom::polygon_t> *diff_polygons)
+{
+    assert(geoms_old);
+    assert(geoms_new);
+
+    geom::multipoint_t old_points;
+    geom::multilinestring_t old_linestrings;
+    geom::multipolygon_t old_polygons;
+
+    classify_geometries(geoms_old, &old_points, &old_linestrings,
+                        &old_polygons);
+
+    geom::multipoint_t new_points;
+    geom::multilinestring_t new_linestrings;
+    geom::multipolygon_t new_polygons;
+
+    classify_geometries(geoms_new, &new_points, &new_linestrings,
+                        &new_polygons);
+
+    boost::geometry::sym_difference(old_points, new_points, *diff_points);
+    boost::geometry::sym_difference(old_linestrings, new_linestrings,
+                                    *diff_linestrings);
+    boost::geometry::sym_difference(old_polygons, new_polygons, *diff_polygons);
+}
+
+} // anonymous namespace
+
+void flex_table_column_t::do_expire(
+    std::vector<geom::geometry_t> *geoms_old,
+    std::vector<geom::geometry_t> *geoms_new,
+    std::vector<expire_tiles_t> *expire,
+    std::vector<expire_output_t> *expire_outputs, bool enable_diff_expire) const
+{
+    assert(geoms_old);
+    assert(geoms_new);
     assert(expire);
+    assert(expire_outputs);
+
+    // Sometimes it doesn't depend on the expire config whether we want to
+    // do diff expire.
+    bool const always_separate =
+        !enable_diff_expire || geoms_old->empty() || geoms_new->empty();
+
+    bool need_diff_expire = false;
+
     for (auto const &expire_config : m_expires) {
         assert(expire_config.expire_output < expire->size());
-        (*expire)[expire_config.expire_output].from_geometry(geom,
-                                                             expire_config);
+        auto &expire_tiles = expire->at(expire_config.expire_output);
+
+        if (!expire_config.diff_expire || always_separate) {
+            for (auto const &geom : *geoms_old) {
+                expire_tiles.from_geometry(geom, expire_config);
+            }
+            for (auto const &geom : *geoms_new) {
+                expire_tiles.from_geometry(geom, expire_config);
+            }
+            expire_tiles.commit_tiles(
+                &expire_outputs->at(expire_config.expire_output));
+        } else {
+            need_diff_expire = true;
+        }
+    }
+
+    if (always_separate || !need_diff_expire) {
+        return;
+    }
+
+    std::vector<geom::point_t> diff_points;
+    std::vector<geom::linestring_t> diff_linestrings;
+    std::vector<geom::polygon_t> diff_polygons;
+
+    find_difference(geoms_old, geoms_new, &diff_points, &diff_linestrings,
+                    &diff_polygons);
+
+    for (auto const &expire_config : m_expires) {
+        assert(expire_config.expire_output < expire->size());
+        auto &expire_tiles = expire->at(expire_config.expire_output);
+
+        if (expire_config.diff_expire) {
+            for (auto const &geom : diff_points) {
+                expire_tiles.from_geometry(geom, expire_config);
+            }
+            for (auto const &geom : diff_linestrings) {
+                expire_tiles.from_geometry(geom, expire_config);
+            }
+            for (auto const &geom : diff_polygons) {
+                expire_tiles.from_geometry(geom, expire_config);
+            }
+            expire_tiles.commit_tiles(
+                &expire_outputs->at(expire_config.expire_output));
+        }
     }
 }

@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -185,7 +185,7 @@ private:
 
     std::pair<osmid_t, std::size_t> get_internal(osmid_t id) const noexcept;
 
-    static constexpr std::size_t const max_block_size = 16UL * 1024UL * 1024UL;
+    static constexpr std::size_t MAX_BLOCK_SIZE = 16UL * 1024UL * 1024UL;
 
     std::vector<range_entry> m_ranges;
     std::size_t m_block_size;

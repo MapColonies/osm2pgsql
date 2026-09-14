@@ -4,9 +4,10 @@ https://osmcode.org/libosmium
 
 A fast and flexible C++ library for working with OpenStreetMap data.
 
-Libosmium works on Linux, macOS and Windows.
+Libosmium works on Linux, macOS and Windows. You need a 64bit system, 32bit
+systems are not supported.
 
-[![Github Build Status](https://github.com/osmcode/libosmium/workflows/CI/badge.svg?branch=master)](https://github.com/osmcode/libosmium/actions)
+[![Build Status](https://github.com/osmcode/libosmium/actions/workflows/ci.yml/badge.svg)](https://github.com/osmcode/libosmium/actions)
 [![Packaging status](https://repology.org/badge/tiny-repos/libosmium.svg)](https://repology.org/metapackage/libosmium)
 
 Please see the [Libosmium manual](https://osmcode.org/libosmium/manual.html)
@@ -15,8 +16,7 @@ for more details than this README can provide.
 
 ## Prerequisites
 
-You need a C++11 compiler and standard C++ library. Osmium needs at least GCC
-4.8 or clang (LLVM) 3.4. (Some parts may work with older versions.)
+You need a C++14 compiler and standard C++ library.
 
 Different parts of Libosmium (and the applications built on top of it) need
 different libraries. You DO NOT NEED to install all of them, just install those

@@ -1,20 +1,11 @@
 
-cmake_minimum_required(VERSION 3.8.0)
+cmake_minimum_required(VERSION 3.10.0)
 
-project(osm2pgsql VERSION 1.10.0 LANGUAGES CXX C)
+project(osm2pgsql VERSION 2.3.1 LANGUAGES CXX C)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-
-# Do not create install targets when run as a subproject.
-# Currently used by Nominatim which cannot yet rely on installed versions
-# of osm2pgsql.
-if (${PROJECT_NAME} STREQUAL ${CMAKE_PROJECT_NAME})
-    set(ENABLE_INSTALL ON)
-else()
-    set(ENABLE_INSTALL OFF)
-endif()
 
 if (NOT ${CMAKE_SIZEOF_VOID_P} EQUAL 8)
     message(FATAL_ERROR "osm2pgsql needs a 64 bit architecture")
@@ -28,8 +19,8 @@ endif()
 
 option(BUILD_TESTS    "Build test suite" OFF)
 option(BUILD_COVERAGE "Build with coverage" OFF)
-option(WITH_LUA       "Build with Lua support" ON)
 option(WITH_LUAJIT    "Build with LuaJIT support" OFF)
+option(WITH_PROJ      "Build with Projection support" ON)
 
 if (PROJECT_SOURCE_DIR STREQUAL PROJECT_BINARY_DIR)
     message(FATAL_ERROR "In-source builds are not allowed, please use a separate build directory like `mkdir build && cd build && cmake ..`")
@@ -46,17 +37,20 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 if (MSVC)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX)
-    add_compile_options(-wd4996)
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /ignore:4099 /STACK:30000000")
+    add_compile_options(-wd4996 -utf-8)
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /ignore:4099")
 else()
     add_compile_options(-Wall)
+endif()
+
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_definitions(-Wno-stringop-overread -Wno-maybe-uninitialized)
 endif()
 
 option(EXTERNAL_LIBOSMIUM "Do not use the bundled libosmium" OFF)
 option(EXTERNAL_PROTOZERO "Do not use the bundled protozero" OFF)
 option(EXTERNAL_FMT       "Do not use the bundled fmt"       OFF)
-
-set(USE_PROJ_LIB "6" CACHE STRING "Which version of PROJ API to use: ('4', '6', 'off', or 'auto')")
+option(EXTERNAL_CLI11     "Do not use the bundled CLI11"     OFF)
 
 if (NOT WIN32 AND NOT APPLE)
     # No need for this path, just a workaround to make cmake work on all systems.
@@ -65,10 +59,10 @@ if (NOT WIN32 AND NOT APPLE)
     set(PostgreSQL_TYPE_INCLUDE_DIR /usr/include)
 endif()
 
-set(MINIMUM_POSTGRESQL_SERVER_VERSION "9.6")
-set(MINIMUM_POSTGRESQL_SERVER_VERSION_NUM "90600")
+set(MINIMUM_POSTGRESQL_SERVER_VERSION "12")
+set(MINIMUM_POSTGRESQL_SERVER_VERSION_NUM "120000")
 
-set(PostgreSQL_ADDITIONAL_VERSIONS "15" "14" "13" "12" "11" "10" "9.6")
+set(PostgreSQL_ADDITIONAL_VERSIONS "19" "18" "17" "16" "15" "14" "13" "12")
 
 #############################################################
 # Version
@@ -175,29 +169,29 @@ if (NOT EXTERNAL_FMT)
     set(FMT_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/contrib/fmt/include")
 endif()
 
+if (NOT EXTERNAL_CLI11)
+    set(CLI11_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/contrib/CLI11/include")
+endif()
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_BINARY_DIR})
 
 find_package(Osmium 2.17.3 REQUIRED COMPONENTS io)
-include_directories(SYSTEM ${OSMIUM_INCLUDE_DIRS} ${PROTOZERO_INCLUDE_DIR} ${FMT_INCLUDE_DIR})
+include_directories(SYSTEM ${OSMIUM_INCLUDE_DIRS} ${PROTOZERO_INCLUDE_DIR} ${FMT_INCLUDE_DIR} ${CLI11_INCLUDE_DIR})
 
-if (WITH_LUA)
-    if (WITH_LUAJIT)
-        message(STATUS "Building with LuaJIT support")
-        find_package(LuaJIT REQUIRED)
-        include_directories(SYSTEM ${LUAJIT_INCLUDE_DIR})
-        add_definitions(-DHAVE_LUAJIT=1)
-    else()
-        message(STATUS "Building with Lua support")
-        find_package(Lua REQUIRED)
-        include_directories(SYSTEM ${LUA_INCLUDE_DIR})
-    endif()
-    add_definitions(-DHAVE_LUA=1)
-    find_program(LUA_EXE NAMES lua lua5.4 lua5.3 lua5.2 lua5.1)
+if (WITH_LUAJIT)
+    message(STATUS "Building with LuaJIT support")
+    find_package(LuaJIT REQUIRED)
+    include_directories(SYSTEM ${LUAJIT_INCLUDE_DIR})
+    add_definitions(-DHAVE_LUAJIT=1)
 else()
-    message(STATUS "Building without Lua support")
+    message(STATUS "Building with Lua (but not LuaJIT) support")
+    find_package(Lua REQUIRED)
+    include_directories(SYSTEM ${LUA_INCLUDE_DIR})
 endif()
 
-find_package(Boost 1.50 REQUIRED COMPONENTS system filesystem)
+find_program(LUA_EXE NAMES lua lua5.4 lua5.3 lua5.2 lua5.1)
+
+find_package(Boost CONFIG 1.50 REQUIRED)
 include_directories(SYSTEM ${Boost_INCLUDE_DIR})
 
 find_package(PostgreSQL REQUIRED)
@@ -217,66 +211,32 @@ find_package(OpenCV QUIET OPTIONAL_COMPONENTS core imgcodecs imgproc)
 
 set(LIBS ${Boost_LIBRARIES} ${PostgreSQL_LIBRARY} ${OSMIUM_LIBRARIES})
 
-if (USE_PROJ_LIB STREQUAL "off")
-    message(STATUS "Proj library disabled (because USE_PROJ_LIB is set to 'off').")
-else()
-    find_path(PROJ4_INCLUDE_DIR proj_api.h)
-    if (PROJ4_INCLUDE_DIR AND NOT USE_PROJ_LIB STREQUAL "6")
-        message(STATUS "Found proj_api.h")
-        find_library(PROJ_LIBRARY NAMES proj)
-        message(STATUS "Found Proj [API 4] ${PROJ_LIBRARY}")
-        add_definitions(-DHAVE_GENERIC_PROJ=4)
-        set(HAVE_PROJ4 1)
+if (WITH_PROJ)
+    find_path(PROJ6_INCLUDE_DIR proj.h)
+    find_library(PROJ_LIBRARY NAMES proj)
+    if (PROJ_LIBRARY)
+        message(STATUS "Found Proj ${PROJ_LIBRARY}")
+        add_definitions(-DHAVE_GENERIC_PROJ=6)
+        set(HAVE_PROJ6 1)
         list(APPEND LIBS ${PROJ_LIBRARY})
-        include_directories(SYSTEM ${PROJ4_INCLUDE_DIR})
-    elseif (NOT USE_PROJ_LIB STREQUAL "4")
-        find_path(PROJ6_INCLUDE_DIR proj.h)
-        find_library(PROJ_LIBRARY NAMES proj)
-        if (PROJ_LIBRARY)
-            message(STATUS "Found Proj [API 6] ${PROJ_LIBRARY}")
-            add_definitions(-DHAVE_GENERIC_PROJ=6)
-            set(HAVE_PROJ6 1)
-            list(APPEND LIBS ${PROJ_LIBRARY})
-            include_directories(SYSTEM ${PROJ6_INCLUDE_DIR})
-        else()
-            message(STATUS "Proj library not found.")
-            message(STATUS "    Only Mercartor and WGS84 projections will be available.")
-        endif()
+        include_directories(SYSTEM ${PROJ6_INCLUDE_DIR})
     endif()
-endif()
-
-if (USE_PROJ_LIB STREQUAL "4" AND NOT HAVE_PROJ4)
-    message(FATAL_ERROR "USE_PROJ_LIB was set to '4', but PROJ version 4 API not found")
-endif()
-
-if (USE_PROJ_LIB STREQUAL "6" AND NOT HAVE_PROJ6)
-    message(FATAL_ERROR "USE_PROJ_LIB was set to '6', but PROJ version 6 API not found")
 endif()
 
 if (LUAJIT_FOUND)
     list(APPEND LIBS ${LUAJIT_LIBRARIES})
-elseif (LUA_FOUND)
+else()
     list(APPEND LIBS ${LUA_LIBRARIES})
 endif()
 
 if (WIN32)
     list(APPEND LIBS ws2_32)
-    if (MSVC)
-        find_path(GETOPT_INCLUDE_DIR getopt.h)
-        find_library(GETOPT_LIBRARY NAMES wingetopt getopt)
-        if (GETOPT_INCLUDE_DIR AND GETOPT_LIBRARY)
-            include_directories(SYSTEM ${GETOPT_INCLUDE_DIR})
-            list(APPEND LIBS ${GETOPT_LIBRARY})
-        else()
-            message(FATAL_ERROR "Can not find getopt library for Windows. Please get it from https://github.com/alex85k/wingetopt or alternative source.")
-        endif()
-    endif()
 endif()
 
 message(STATUS "Libraries used to build: ${LIBS}")
 
 #############################################################
-# Build the library and executable file
+# Build the library and executable files
 #############################################################
 
 add_subdirectory(src)
@@ -287,28 +247,27 @@ target_link_libraries(osm2pgsql osm2pgsql_lib ${LIBS})
 if (${POTRACE_LIBRARY} STREQUAL "POTRACE_LIBRARY-NOTFOUND" OR NOT OPENCV_CORE_FOUND)
     message(STATUS "Did not find opencv and/or potrace library. Not building osm2pgsql-gen.")
 else()
-    if (WITH_LUA)
-        message(STATUS "Found opencv and potrace library. Building osm2pgsql-gen.")
-        set(BUILD_GEN 1)
-        include_directories(SYSTEM ${POTRACE_INCLUDE_DIR})
-        add_executable(osm2pgsql-gen src/gen/osm2pgsql-gen.cpp
-                    src/gen/canvas.cpp
-                    src/gen/gen-base.cpp
-                    src/gen/gen-create.cpp
-                    src/gen/gen-discrete-isolation.cpp
-                    src/gen/gen-rivers.cpp
-                    src/gen/gen-tile-builtup.cpp
-                    src/gen/gen-tile-raster.cpp
-                    src/gen/gen-tile-vector.cpp
-                    src/gen/gen-tile.cpp
-                    src/gen/params.cpp
-                    src/gen/raster.cpp
-                    src/gen/tracer.cpp)
-        target_link_libraries(osm2pgsql-gen osm2pgsql_lib ${LIBS} ${POTRACE_LIBRARY} ${OpenCV_LIBS})
-    else()
-        message(STATUS "No Lua. Not building osm2pgsql-gen.")
-    endif()
+    message(STATUS "Found opencv and potrace library. Building osm2pgsql-gen.")
+    set(BUILD_GEN 1)
+    include_directories(SYSTEM ${POTRACE_INCLUDE_DIR})
+    add_executable(osm2pgsql-gen src/gen/osm2pgsql-gen.cpp
+                src/gen/canvas.cpp
+                src/gen/gen-base.cpp
+                src/gen/gen-create.cpp
+                src/gen/gen-discrete-isolation.cpp
+                src/gen/gen-rivers.cpp
+                src/gen/gen-tile-builtup.cpp
+                src/gen/gen-tile-raster.cpp
+                src/gen/gen-tile-sql.cpp
+                src/gen/gen-tile-vector.cpp
+                src/gen/gen-tile.cpp
+                src/gen/raster.cpp
+                src/gen/tracer.cpp)
+    target_link_libraries(osm2pgsql-gen osm2pgsql_lib ${LIBS} ${POTRACE_LIBRARY} ${OpenCV_LIBS})
 endif()
+
+add_executable(osm2pgsql-expire src/osm2pgsql-expire.cpp)
+target_link_libraries(osm2pgsql-expire osm2pgsql_lib ${LIBS})
 
 #############################################################
 # Optional "clang-tidy" target
@@ -316,7 +275,7 @@ endif()
 
 message(STATUS "Looking for clang-tidy")
 find_program(CLANG_TIDY
-             NAMES clang-tidy clang-tidy-16 clang-tidy-15 clang-tidy-14 clang-tidy-13 clang-tidy-12 clang-tidy-11)
+             NAMES clang-tidy clang-tidy-19 clang-tidy-18 clang-tidy-17 clang-tidy-16 clang-tidy-15)
 
 if (CLANG_TIDY)
     message(STATUS "Looking for clang-tidy - found ${CLANG_TIDY}")
@@ -325,6 +284,7 @@ if (CLANG_TIDY)
 
     add_custom_target(clang-tidy
         ${CLANG_TIDY}
+        --config-file ${CMAKE_SOURCE_DIR}/.clang-tidy
         -p ${CMAKE_BINARY_DIR}
         ${CT_CHECK_FILES}
     )
@@ -343,10 +303,6 @@ if (BUILD_TESTS)
         set(TESTING_TIMEOUT 1200)
     endif()
     add_subdirectory(tests)
-    configure_file(
-        ${PROJECT_SOURCE_DIR}/tests/run-behave.in
-        ${PROJECT_BINARY_DIR}/run-behave
-    )
 else()
     message(STATUS "Tests disabled. Set BUILD_TESTS=ON to enable tests.")
 endif()
@@ -363,12 +319,10 @@ add_subdirectory(man)
 
 include(GNUInstallDirs)
 
-if (ENABLE_INSTALL)
-    install(TARGETS osm2pgsql DESTINATION bin)
-    install(FILES default.style empty.style DESTINATION share/osm2pgsql)
-    install(PROGRAMS scripts/osm2pgsql-replication DESTINATION bin)
-    if (BUILD_GEN)
-        install(TARGETS osm2pgsql-gen COMPONENT gen EXCLUDE_FROM_ALL DESTINATION bin)
-        add_custom_target(install-gen cmake --install ${CMAKE_BINARY_DIR} --component gen)
-    endif()
+install(TARGETS osm2pgsql DESTINATION bin)
+install(TARGETS osm2pgsql-expire DESTINATION bin)
+install(FILES default.style empty.style DESTINATION share/osm2pgsql)
+install(PROGRAMS scripts/osm2pgsql-replication DESTINATION bin)
+if (BUILD_GEN)
+    install(TARGETS osm2pgsql-gen DESTINATION bin)
 endif()

@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -28,7 +28,7 @@
  */
 class progress_display_t : public osmium::handler::Handler
 {
-    struct Counter
+    struct counter_t
     {
         std::size_t count = 0;
         std::time_t start = 0;
@@ -57,7 +57,6 @@ public:
         }
     }
 
-
     void relation(osmium::Relation const &)
     {
         if (++m_rel.count % 10 == 0) {
@@ -80,9 +79,9 @@ private:
     uint64_t rels_time(std::time_t now) const noexcept;
     uint64_t overall_time(std::time_t now) const noexcept;
 
-    Counter m_node{};
-    Counter m_way{};
-    Counter m_rel{};
+    counter_t m_node{};
+    counter_t m_way{};
+    counter_t m_rel{};
     std::time_t m_last_print_time{std::time(nullptr)};
     bool m_enabled;
 };

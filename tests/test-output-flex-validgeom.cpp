@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,16 +12,20 @@
 #include "common-import.hpp"
 #include "common-options.hpp"
 
-static testing::db::import_t db;
+namespace {
 
-static char const *const conf_file = "test_output_flex_validgeom.lua";
-static char const *const data_file = "test_output_pgsql_validgeom.osm";
+testing::db::import_t db;
+
+char const *const CONF_FILE = "test_output_flex_validgeom.lua";
+char const *const DATA_FILE = "test_output_pgsql_validgeom.osm";
+
+} // anonymous namespace
 
 TEST_CASE("no invalid geometries should end up in the database")
 {
-    options_t const options = testing::opt_t().flex(conf_file);
+    options_t const options = testing::opt_t().flex(CONF_FILE);
 
-    REQUIRE_NOTHROW(db.run_file(options, data_file));
+    REQUIRE_NOTHROW(db.run_file(options, DATA_FILE));
 
     auto conn = db.db().connect();
 

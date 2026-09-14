@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,7 +12,11 @@
 #include "common-import.hpp"
 #include "pgsql.hpp"
 
-static testing::db::import_t const db;
+namespace {
+
+testing::db::import_t db;
+
+} // anonymous namespace
 
 TEST_CASE("Tablespace clause with no tablespace")
 {
@@ -101,7 +105,7 @@ TEST_CASE("exec_prepared with binary parameter should work")
     auto const conn = db.db().connect();
     conn.exec("PREPARE test(bytea) AS SELECT length($1)");
 
-    binary_param const p{"foo \x01 bar"};
+    binary_param_t const p{"foo \x01 bar"};
     auto const result = conn.exec_prepared("test", p);
     REQUIRE(result.status() == PGRES_TUPLES_OK);
     REQUIRE(result.num_fields() == 1);
@@ -116,7 +120,7 @@ TEST_CASE("exec_prepared with mixed parameter types should work")
               " SELECT length($1) + length($2) + $3");
 
     std::string const p1{"foo bar"};
-    binary_param const p2{"foo \x01 bar"};
+    binary_param_t const p2{"foo \x01 bar"};
     int const p3 = 17;
     auto const result = conn.exec_prepared("test", p1, p2, p3);
     REQUIRE(result.status() == PGRES_TUPLES_OK);
@@ -134,4 +138,14 @@ TEST_CASE("create table and insert something")
     REQUIRE(result.num_fields() == 0);
     REQUIRE(result.num_tuples() == 0);
     REQUIRE(result.affected_rows() == 2);
+}
+
+TEST_CASE("empty result object should return fatal status")
+{
+    pg_result_t const result;
+    REQUIRE(result.status() == PGRES_FATAL_ERROR);
+    REQUIRE_FALSE(result);
+    REQUIRE(result.num_fields() == 0);
+    REQUIRE(result.num_tuples() == 0);
+    REQUIRE(result.affected_rows() == 0);
 }

@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -11,19 +11,36 @@
 
 #include <osmium/thread/util.hpp>
 
+#include <ctime>
+
+namespace {
+
 thread_local unsigned int this_thread_num = 0;
 
 /// Global logger singleton
-logger the_logger{};
+logger_t the_logger{};
+
+} // anonymous namespace
 
 /// Access the global logger singleton
-logger &get_logger() noexcept { return the_logger; }
+logger_t &get_logger() noexcept { return the_logger; }
 
-void logger::generate_common_prefix(std::string *str, fmt::text_style const &ts,
-                                    char const *prefix) const
+void logger_t::generate_common_prefix(std::string *str,
+                                      fmt::text_style const &ts,
+                                      char const *prefix) const
 {
-    *str += fmt::format("{:%Y-%m-%d %H:%M:%S}  ",
-                       fmt::localtime(std::time(nullptr)));
+    auto const now = std::time(nullptr);
+    std::tm tm_local{};
+#ifdef _MSC_VER
+    if (localtime_s(&tm_local, &now) != 0) {
+        throw fmt::format_error("time_t value out of range");
+    }
+#else
+    if (!localtime_r(&now, &tm_local)) {
+        throw fmt::format_error("time_t value out of range");
+    }
+#endif
+    *str += fmt::format("{:%F %T}  ", tm_local);
 
     if (m_current_level == log_level::debug) {
         *str += fmt::format(ts, "[{:02d}] ", this_thread_num);
@@ -34,7 +51,7 @@ void logger::generate_common_prefix(std::string *str, fmt::text_style const &ts,
     }
 }
 
-void logger::init_thread(unsigned int num)
+void logger_t::init_thread(unsigned int num)
 {
     // Store thread number in thread local variable
     this_thread_num = num;

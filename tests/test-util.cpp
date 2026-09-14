@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,19 +12,18 @@
 #include "util.hpp"
 
 #include <cstring>
-#include <limits>
 #include <string>
 #include <vector>
 
-TEST_CASE("double_to_buffer 0", "[NoDB]")
+TEST_CASE("double_to_buffer_t 0", "[NoDB]")
 {
-    util::double_to_buffer const buffer{0.0};
+    util::double_to_buffer_t const buffer{0.0};
     REQUIRE(std::strcmp(buffer.c_str(), "0") == 0);
 }
 
-TEST_CASE("double_to_buffer 3.141", "[NoDB]")
+TEST_CASE("double_to_buffer_t 3.141", "[NoDB]")
 {
-    util::double_to_buffer const buffer{3.141};
+    util::double_to_buffer_t const buffer{3.141};
     REQUIRE(std::strcmp(buffer.c_str(), "3.141") == 0);
 }
 
@@ -44,17 +43,17 @@ TEST_CASE("human readable time durations", "[NoDB]")
 
 TEST_CASE("find_by_name()", "[NoDB]")
 {
-    class test_class
+    class test_class_t
     {
     public:
-        explicit test_class(std::string n) : m_name(std::move(n)) {}
+        explicit test_class_t(std::string n) : m_name(std::move(n)) {}
         std::string name() const noexcept { return m_name; }
 
     private:
         std::string m_name;
     };
 
-    std::vector<test_class> t;
+    std::vector<test_class_t> t;
 
     REQUIRE(util::find_by_name(t, "") == nullptr);
     REQUIRE(util::find_by_name(t, "foo") == nullptr);

@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,7 +12,6 @@
 #include "format.hpp"
 
 #include <cassert>
-#include <stdexcept>
 
 // The lua_getextraspace() function is only available from Lua 5.3. For
 // earlier versions we fall back to storing the context pointer in the
@@ -34,14 +33,18 @@ void *luaX_get_context(lua_State *lua_state) noexcept
 
 #else
 
+namespace {
+
 // Unique key for lua registry
-static char const *osm2pgsql_output_flex = "osm2pgsql_output_flex";
+constexpr char const *const OSM2PGSQL_OUTPUT_FLEX = "osm2pgsql_output_flex";
+
+} // anonymous namespace
 
 void luaX_set_context(lua_State *lua_state, void *ptr) noexcept
 {
     assert(lua_state);
     assert(ptr);
-    lua_pushlightuserdata(lua_state, (void *)osm2pgsql_output_flex);
+    lua_pushlightuserdata(lua_state, (void *)OSM2PGSQL_OUTPUT_FLEX);
     lua_pushlightuserdata(lua_state, ptr);
     lua_settable(lua_state, LUA_REGISTRYINDEX);
 }
@@ -49,7 +52,7 @@ void luaX_set_context(lua_State *lua_state, void *ptr) noexcept
 void *luaX_get_context(lua_State *lua_state) noexcept
 {
     assert(lua_state);
-    lua_pushlightuserdata(lua_state, (void *)osm2pgsql_output_flex);
+    lua_pushlightuserdata(lua_state, (void *)OSM2PGSQL_OUTPUT_FLEX);
     lua_gettable(lua_state, LUA_REGISTRYINDEX);
     auto *const ptr = lua_touserdata(lua_state, -1);
     assert(ptr);
@@ -58,6 +61,11 @@ void *luaX_get_context(lua_State *lua_state) noexcept
 }
 
 #endif
+
+void luaX_pushstring(lua_State *lua_state, std::string_view str) noexcept
+{
+    lua_pushlstring(lua_state, str.data(), str.size());
+}
 
 void luaX_add_table_str(lua_State *lua_state, char const *key,
                         char const *value) noexcept
@@ -68,10 +76,10 @@ void luaX_add_table_str(lua_State *lua_state, char const *key,
 }
 
 void luaX_add_table_str(lua_State *lua_state, char const *key,
-                        char const *value, std::size_t size) noexcept
+                        std::string_view value) noexcept
 {
     lua_pushstring(lua_state, key);
-    lua_pushlstring(lua_state, value, size);
+    luaX_pushstring(lua_state, value);
     lua_rawset(lua_state, -3);
 }
 
@@ -105,6 +113,32 @@ void luaX_add_table_func(lua_State *lua_state, char const *key,
     lua_pushstring(lua_state, key);
     lua_pushcfunction(lua_state, func);
     lua_rawset(lua_state, -3);
+}
+
+void luaX_set_up_metatable(
+    lua_State *lua_state, char const *name, char const *luaclass,
+    std::initializer_list<std::pair<char const *, lua_CFunction>> map)
+
+{
+    lua_getglobal(lua_state, "osm2pgsql");
+    if (luaL_newmetatable(lua_state, luaclass) != 1) {
+        throw std::runtime_error{"Internal error: Lua newmetatable failed."};
+    }
+    lua_pushvalue(lua_state, -1); // Copy of new metatable
+
+    // Add metatable under the specified name so we can access it from Lua
+    lua_setfield(lua_state, -3, name);
+
+    // Now add functions to metatable
+    lua_pushvalue(lua_state, -1);
+    lua_setfield(lua_state, -2, "__index");
+    for (auto const &[key, func] : map) {
+        lua_pushstring(lua_state, key);
+        lua_pushcfunction(lua_state, func);
+        lua_rawset(lua_state, -3);
+    }
+
+    lua_settop(lua_state, 0);
 }
 
 char const *luaX_get_table_string(lua_State *lua_state, char const *key,
@@ -183,6 +217,30 @@ uint32_t luaX_get_table_optional_uint32(lua_State *lua_state, char const *key,
     return static_cast<uint32_t>(num);
 }
 
+uint64_t luaX_get_table_optional_uint64(lua_State *lua_state, char const *key,
+                                        int table_index, char const *error_msg,
+                                        uint64_t min, uint64_t max,
+                                        char const *range)
+{
+    assert(lua_state);
+    assert(key);
+    assert(error_msg);
+    lua_getfield(lua_state, table_index, key);
+    if (lua_isnil(lua_state, -1)) {
+        return 0;
+    }
+    if (!lua_isnumber(lua_state, -1)) {
+        throw fmt_error("{} must contain an integer.", error_msg);
+    }
+
+    auto const num = lua_tonumber(lua_state, -1);
+    if (num < static_cast<double>(min) || num > static_cast<double>(max)) {
+        throw fmt_error("{} must be between {}.", error_msg, range);
+    }
+
+    return static_cast<uint64_t>(num);
+}
+
 // Lua 5.1 doesn't support luaL_traceback, unless LuaJIT is used
 #if LUA_VERSION_NUM < 502 && !defined(HAVE_LUAJIT)
 
@@ -193,7 +251,9 @@ int luaX_pcall(lua_State *lua_state, int narg, int nres)
 
 #else
 
-static int pcall_error_traceback_handler(lua_State *lua_state)
+namespace {
+
+int pcall_error_traceback_handler(lua_State *lua_state)
 {
     assert(lua_state);
 
@@ -209,6 +269,8 @@ static int pcall_error_traceback_handler(lua_State *lua_state)
     luaL_traceback(lua_state, lua_state, msg, 1);
     return 1;
 }
+
+} // anonymous namespace
 
 /// Wrapper function for lua_pcall() showing a stack trace on error.
 int luaX_pcall(lua_State *lua_state, int narg, int nres)

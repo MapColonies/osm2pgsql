@@ -46,7 +46,7 @@ mandatory for short options too.
 # HELP/VERSION OPTIONS
 
 -h, \--help
-:   Print help. Add **-v, \--verbose** to display more verbose help.
+:   Print help.
 
 -V, \--version
 :   Print osm2pgsql version.
@@ -79,7 +79,7 @@ mandatory for short options too.
     `postgres://`), it is treated as a conninfo string. See the PostgreSQL
     manual for details.
 
--U, \--username=NAME
+-U, \--username=NAME, \--user=NAME
 :   Postgresql user name.
 
 -W, \--password
@@ -111,7 +111,9 @@ mandatory for short options too.
 
 -i, \--tablespace-index=TABLESPC
 :   Store all indexes in the PostgreSQL tablespace `TABLESPC`. This option
-    also affects the tables created by the pgsql output.
+    also affects the tables created by the pgsql output. This option is
+    deprecated. Use the \--tablespace-slim-index and/or \--tablespace-main-index
+    options instead.
 
 \--tablespace-slim-data=TABLESPC
 :   Store the slim mode tables in the given tablespace.
@@ -147,25 +149,23 @@ mandatory for short options too.
     It needs at least the amount of `shared_buffers` given in its configuration.
     Defaults to 800.
 
-\--cache-strategy=STRATEGY
-:   This deprecated option will be ignored.
-
 -x, \--extra-attributes
 :   Include attributes of each object in the middle tables and make them
     available to the outputs. Attributes are: user name, user id, changeset id,
     timestamp and version.
 
-\--flat-nodes=FILENAME
-:   The flat-nodes mode is a separate method to store slim mode node information on disk.
-    Instead of storing this information in the main PostgreSQL database, this mode creates
-    its own separate custom database to store the information. As this custom database
-    has application level knowledge about the data to store and is not general purpose,
-    it can store the data much more efficiently. Storing the node information for the full
-    planet requires more than 300GB in PostgreSQL, the same data is stored in "only" 50GB using
+-F, \--flat-nodes=FILENAME
+:   Use a file on disk to store node locations instead of storing them in
+    memory (in non-slim mode) or in the database (in slim mode). This is much
+    more efficient than storing the data in the database.
+    Storing the node information for the full
+    planet requires more than 500GB in PostgreSQL, the same data is stored in "only" 90GB using
     the flat-nodes mode. This can also increase the speed of applying diff files. This option
     activates the flat-nodes mode and specifies the location of the database file. It is a
     single large file. This mode is only recommended for full planet imports
-    as it doesn't work well with small imports. The default is disabled.
+    as it doesn't work well with small imports. The default is disabled. The
+    file will stay on disk after import, use \--drop to remove it (but you
+    can't do updates then).
 
 \--middle-schema=SCHEMA
 :   Use PostgreSQL schema SCHEMA for all tables, indexes, and functions in the
@@ -173,33 +173,19 @@ mandatory for short options too.
     database user. By default the schema set with `--schema` is used, or
     `public` if that is not set.
 
-\--middle-way-node-index-id-shift=SHIFT
-:   Set ID shift for way node bucket index in middle. Experts only. See
-    documentation for details.
-
-\--middle-database-format=FORMAT
-:   Set the database format for the middle tables to FORMAT. Allowed formats
-    are **legacy** and **new**. The **legacy** format is the old format that
-    will eventually be deprecated and removed but is currently still the
-    default. The **new** format was introduced in version 1.9.0 and is still
-    experimental. See the manual for details on these formats. (Only works
-    with **\--slim**. In append mode osm2pgsql will automatically detect the
-    database format, so don't use this with **-a, \--append**.)
-
 \--middle-with-nodes
-:   Used together with the **new** middle database format when a flat nodes
-    file is used to force storing nodes with tags in the database, too.
+:   When a flat nodes file is used, nodes are not stored in the database. Use
+    this option to force storing nodes with tags in the database, too.
 
 # OUTPUT OPTIONS
 
 -O, \--output=OUTPUT
 :   Specifies the output to use. Currently osm2pgsql supports **pgsql**,
-    **flex**, **gazetteer** and **null**. **pgsql** is
-    the default output still available for backwards compatibility. New
-    setups should use the **flex** output which allows for a much more flexible
-    configuration. The **gazetteer** output is intended for geocoding with
-    Nominatim only. The **null** output does not write anything and is only
-    useful for testing or with **\--slim** for creating slim tables.
+    **flex**, and **null**. **pgsql** is the default output still available for
+    backwards compatibility. New setups should use the **flex** output which
+    allows for a much more flexible configuration. The **null** output does not
+    write anything and is only useful for testing or with **\--slim** for
+    creating slim tables.
 
 -S, \--style=FILE
 :   The style file. This specifies how the data is imported into the database,
@@ -208,10 +194,6 @@ mandatory for short options too.
     default.)
 
 # PGSQL OUTPUT OPTIONS
-
--i, \--tablespace-index=TABLESPC
-:   Store all indexes in the PostgreSQL tablespace `TABLESPC`. This option
-    also affects the middle tables.
 
 \--tablespace-main-data=TABLESPC
 :   Store the data tables in the PostgreSQL tablespace `TABLESPC`.
@@ -304,10 +286,6 @@ mandatory for short options too.
 
 \--number-processes=THREADS
 :   Specifies the number of parallel threads used for certain operations.
-
-\--with-forward-dependencies=BOOL
-:   Propagate changes from nodes to ways and node/way members to relations
-    (Default: `true`).
 
 # SEE ALSO
 

@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -16,12 +16,13 @@
  * Common output layer interface.
  */
 
-#include <osmium/index/id_set.hpp>
-
+#include "idlist.hpp"
+#include "options.hpp"
 #include "osmtypes.hpp"
 #include "output-requirements.hpp"
 
 class db_copy_thread_t;
+class properties_t;
 class thread_pool_t;
 
 struct middle_query_t;
@@ -34,7 +35,7 @@ public:
     static std::shared_ptr<output_t>
     create_output(std::shared_ptr<middle_query_t> const &mid,
                   std::shared_ptr<thread_pool_t> thread_pool,
-                  options_t const &options);
+                  options_t const &options, properties_t const &properties);
 
     output_t(output_t const &) = default;
     output_t &operator=(output_t const &) = default;
@@ -65,12 +66,19 @@ public:
 
     virtual void after_nodes() {}
     virtual void after_ways() {}
+    virtual void after_relations() {}
 
     virtual void wait() {}
 
-    virtual osmium::index::IdSetSmall<osmid_t> const &get_marked_way_ids()
+    virtual idlist_t const &get_marked_node_ids()
     {
-        static osmium::index::IdSetSmall<osmid_t> const ids{};
+        static idlist_t const ids{};
+        return ids;
+    }
+
+    virtual idlist_t const &get_marked_way_ids()
+    {
+        static idlist_t const ids{};
         return ids;
     }
 
@@ -90,11 +98,9 @@ public:
     virtual void way_modify(osmium::Way *way) = 0;
     virtual void relation_modify(osmium::Relation const &rel) = 0;
 
-    virtual void node_delete(osmid_t id) = 0;
-    virtual void way_delete(osmid_t id) = 0;
-    virtual void relation_delete(osmid_t id) = 0;
-
-    virtual void merge_expire_trees(output_t * /*other*/) {}
+    virtual void node_delete(osmium::Node const &node) = 0;
+    virtual void way_delete(osmium::Way *way) = 0;
+    virtual void relation_delete(osmium::Relation const &rel) = 0;
 
     output_requirements const &get_requirements() const noexcept
     {

@@ -3,16 +3,18 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "gen-rivers.hpp"
 
 #include "geom-functions.hpp"
+#include "hex.hpp"
 #include "logging.hpp"
 #include "params.hpp"
 #include "pgsql.hpp"
+#include "projection.hpp"
 #include "util.hpp"
 #include "wkb.hpp"
 
@@ -22,13 +24,12 @@
 #include <unordered_map>
 #include <vector>
 
-gen_rivers_t::gen_rivers_t(pg_conn_t *connection, params_t *params)
-: gen_base_t(connection, params), m_timer_area(add_timer("area")),
+gen_rivers_t::gen_rivers_t(pg_conn_t *connection, bool append, params_t *params)
+: gen_base_t(connection, append, params), m_timer_area(add_timer("area")),
   m_timer_prep(add_timer("prep")), m_timer_get(add_timer("get")),
   m_timer_sort(add_timer("sort")), m_timer_net(add_timer("net")),
   m_timer_remove(add_timer("remove")), m_timer_width(add_timer("width")),
-  m_timer_write(add_timer("write")),
-  m_delete_existing(params->has("delete_existing"))
+  m_timer_write(add_timer("write"))
 {
     check_src_dest_table_params_exist();
 
@@ -41,6 +42,8 @@ gen_rivers_t::gen_rivers_t(pg_conn_t *connection, params_t *params)
                 qualified_name(get_params().get_string("schema"),
                                get_params().get_string("src_areas")));
 }
+
+namespace {
 
 /// The data for a graph edge in the waterway network.
 struct edge_t
@@ -77,10 +80,10 @@ bool operator<(geom::point_t a, edge_t const &b) noexcept
     return a < b.points[0];
 }
 
-static void
-follow_chain_and_set_width(edge_t const &edge, std::vector<edge_t> *edges,
-                           std::map<geom::point_t, uint8_t> const &node_order,
-                           geom::linestring_t *seen)
+void follow_chain_and_set_width(
+    edge_t const &edge, std::vector<edge_t> *edges,
+    std::map<geom::point_t, uint8_t> const &node_order,
+    geom::linestring_t *seen)
 {
     assert(!edge.points.empty());
 
@@ -116,9 +119,8 @@ follow_chain_and_set_width(edge_t const &edge, std::vector<edge_t> *edges,
     }
 }
 
-static void assemble_edge(edge_t *edge, std::vector<edge_t> *edges,
-                          std::map<geom::point_t, uint8_t> const &node_order)
-
+void assemble_edge(edge_t *edge, std::vector<edge_t> *edges,
+                   std::map<geom::point_t, uint8_t> const &node_order)
 {
     assert(edge);
     assert(edges);
@@ -166,6 +168,19 @@ static void assemble_edge(edge_t *edge, std::vector<edge_t> *edges,
     }
 }
 
+std::string const &get_name(
+    std::unordered_map<osmid_t, std::string> const &names, osmid_t id)
+{
+    static std::string const empty;
+    auto const it = names.find(id);
+    if (it == names.end()) {
+        return empty;
+    }
+    return it->second;
+}
+
+} // anonymous namespace
+
 /// Get some stats from source table
 void gen_rivers_t::get_stats()
 {
@@ -179,17 +194,6 @@ void gen_rivers_t::get_stats()
             m_num_points);
 }
 
-static std::string const &
-get_name(std::unordered_map<osmid_t, std::string> const &names, osmid_t id)
-{
-    static std::string const empty;
-    auto const it = names.find(id);
-    if (it == names.end()) {
-        return empty;
-    }
-    return it->second;
-}
-
 void gen_rivers_t::process()
 {
     log_gen("Calculate waterway area width...");
@@ -197,7 +201,11 @@ void gen_rivers_t::process()
     dbexec(R"(UPDATE {qualified_src_areas} SET width =)"
            R"( (ST_MaximumInscribedCircle("{geom_column}")).radius * 2)"
            R"( WHERE width IS NULL)");
-    dbexec("ANALYZE {qualified_src_areas}");
+
+    if (!append_mode()) {
+        dbexec("ANALYZE {qualified_src_areas}");
+    }
+
     timer(m_timer_area).stop();
 
     log_gen("Get 'width' from areas onto lines...");
@@ -258,7 +266,7 @@ SELECT "{id_column}", "{width_column}", "{name_column}", "{geom_column}"
             if (!name.empty()) {
                 names.emplace(id, name);
             }
-            auto const geom = ewkb_to_geom(decode_hex(result.get(i, 3)));
+            auto const geom = ewkb_to_geom(util::decode_hex(result.get(i, 3)));
 
             if (geom.is_linestring()) {
                 auto const &ls = geom.get<geom::linestring_t>();
@@ -323,27 +331,29 @@ SELECT "{id_column}", "{width_column}", "{name_column}", "{geom_column}"
     }
     timer(m_timer_width).stop();
 
-    if (m_delete_existing) {
+    if (append_mode()) {
         dbexec("TRUNCATE {dest}");
     }
 
     log_gen("Writing results to destination table...");
-    dbexec("PREPARE ins (int8, real, text, geometry) AS"
-           " INSERT INTO {dest} ({id_column}, width, name, geom)"
-           " VALUES ($1, $2, $3, $4)");
+    dbprepare("ins", "INSERT INTO {dest} ({id_column}, width, name, geom)"
+                     " VALUES ($1::int8, $2::real, $3::text, $4::geometry)");
 
     timer(m_timer_write).start();
     connection().exec("BEGIN");
     for (auto &edge : edges) {
-        geom::geometry_t const geom{std::move(edge.points), 3857};
+        geom::geometry_t const geom{std::move(edge.points), PROJ_SPHERE_MERC};
         auto const wkb = geom_to_ewkb(geom);
         connection().exec_prepared("ins", edge.id, edge.width,
-                                   get_name(names, edge.id), binary_param(wkb));
+                                   get_name(names, edge.id),
+                                   binary_param_t(wkb));
     }
     connection().exec("COMMIT");
     timer(m_timer_write).stop();
 
-    dbexec("ANALYZE {dest}");
+    if (!append_mode()) {
+        dbexec("ANALYZE {dest}");
+    }
 
     log_gen("Done.");
 }

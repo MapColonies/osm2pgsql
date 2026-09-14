@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -13,24 +13,28 @@
 
 #include "common-cleanup.hpp"
 
-static void write_and_read_location(node_persistent_cache *cache, osmid_t id,
-                                    double x, double y)
+namespace {
+
+void write_and_read_location(node_persistent_cache_t *cache, osmid_t id,
+                             double x, double y)
 {
     cache->set(id, osmium::Location{x, y});
     REQUIRE(osmium::Location(x, y) == cache->get(id));
 }
 
-static void read_location(node_persistent_cache const &cache, osmid_t id,
-                          double x, double y)
+void read_location(node_persistent_cache_t const &cache, osmid_t id, double x,
+                   double y)
 {
     REQUIRE(osmium::Location(x, y) == cache.get(id));
 }
 
-static void delete_location(node_persistent_cache *cache, osmid_t id)
+void delete_location(node_persistent_cache_t *cache, osmid_t id)
 {
     cache->set(id, osmium::Location{});
     REQUIRE(osmium::Location{} == cache->get(id));
 }
+
+} // anonymous namespace
 
 TEST_CASE("Persistent cache", "[NoDB]")
 {
@@ -39,7 +43,7 @@ TEST_CASE("Persistent cache", "[NoDB]")
 
     // create a new cache
     {
-        node_persistent_cache cache{flat_node_file, false};
+        node_persistent_cache_t cache{flat_node_file, true, false};
 
         // write in order
         write_and_read_location(&cache, 10, 10.01, -45.3);
@@ -62,7 +66,7 @@ TEST_CASE("Persistent cache", "[NoDB]")
 
     // reopen the cache
     {
-        node_persistent_cache cache{flat_node_file, false};
+        node_persistent_cache_t cache{flat_node_file, false, false};
 
         // read all previously written locations
         read_location(cache, 10, 10.01, -45.3);
@@ -102,4 +106,14 @@ TEST_CASE("Persistent cache", "[NoDB]")
         read_location(cache, 502754, 0.0, 0.0);
         read_location(cache, 9934, -179.999, 89.1);
     }
+}
+
+TEST_CASE("Opening non-existent persistent cache should fail in append mode",
+          "[NoDB]")
+{
+    std::string const flat_node_file =
+        "test_middle_flat.nonexistent.flat.nodes.bin";
+    testing::cleanup::file_t const flatnode_cleaner{flat_node_file};
+
+    REQUIRE_THROWS(node_persistent_cache_t(flat_node_file, false, false));
 }

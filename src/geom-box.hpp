@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -45,6 +45,11 @@ public:
     constexpr double max_x() const noexcept { return m_max_x; }
     constexpr double max_y() const noexcept { return m_max_y; }
 
+    void set_min_x(double value) noexcept { m_min_x = value; }
+    void set_min_y(double value) noexcept { m_min_y = value; }
+    void set_max_x(double value) noexcept { m_max_x = value; }
+    void set_max_y(double value) noexcept { m_max_y = value; }
+
     constexpr double width() const noexcept { return m_max_x - m_min_x; }
     constexpr double height() const noexcept { return m_max_y - m_min_y; }
 
@@ -65,6 +70,11 @@ public:
     constexpr friend bool operator!=(box_t const &a, box_t const &b)
     {
         return !(a == b);
+    }
+
+    bool valid() const noexcept
+    {
+        return m_min_x != std::numeric_limits<double>::max();
     }
 
 private:

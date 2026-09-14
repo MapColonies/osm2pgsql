@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -16,9 +16,10 @@
 #include "flex-table-column.hpp"
 #include "flex-table.hpp"
 #include "geom.hpp"
+#include "idlist.hpp"
+#include "locator.hpp"
 #include "output.hpp"
 
-#include <osmium/index/id_set.hpp>
 #include <osmium/osm/item_type.hpp>
 
 #include <lua.hpp>
@@ -35,18 +36,16 @@ class geom_transform_t;
 class thread_pool_t;
 struct options_t;
 
-using idset_t = osmium::index::IdSetSmall<osmid_t>;
-
 /**
  * When C++ code is called from the Lua code we sometimes need to know
  * in what context this happens. These are the possible contexts.
  */
-enum class calling_context
+enum class calling_context : std::uint8_t
 {
     main = 0, ///< In main context, i.e. the Lua script outside any callbacks
-    process_node = 1, ///< In the process_node() callback
-    process_way = 2, ///< In the process_way() callback
-    process_relation = 3, ///< In the process_relation() callback
+    process_node = 1,     ///< Inside a callback where a node is handled
+    process_way = 2,      ///< Inside a callback where a way is handled
+    process_relation = 3, ///< Inside a callback where a relation is handled
     select_relation_members = 4 ///< In the select_relation_members() callback
 };
 
@@ -77,7 +76,7 @@ public:
     int index() const noexcept { return m_index; }
 
     /// The name of the function.
-    char const* name() const noexcept { return m_name; }
+    char const *name() const noexcept { return m_name; }
 
     /// The number of results this function is expected to have.
     int nresults() const noexcept { return m_nresults; }
@@ -100,7 +99,7 @@ public:
     /// Constructor for new objects
     output_flex_t(std::shared_ptr<middle_query_t> const &mid,
                   std::shared_ptr<thread_pool_t> thread_pool,
-                  options_t const &options);
+                  options_t const &options, properties_t const &properties);
 
     /// Constructor for cloned objects
     output_flex_t(output_flex_t const *other,
@@ -125,10 +124,13 @@ public:
 
     void after_nodes() override;
     void after_ways() override;
+    void after_relations() override;
 
     void wait() override;
 
-    idset_t const &get_marked_way_ids() override;
+    idlist_t const &get_marked_node_ids() override;
+    idlist_t const &get_marked_way_ids() override;
+
     void reprocess_marked() override;
 
     void pending_way(osmid_t id) override;
@@ -145,11 +147,9 @@ public:
     void way_modify(osmium::Way *way) override;
     void relation_modify(osmium::Relation const &rel) override;
 
-    void node_delete(osmid_t id) override;
-    void way_delete(osmid_t id) override;
-    void relation_delete(osmid_t id) override;
-
-    void merge_expire_trees(output_t *other) override;
+    void node_delete(osmium::Node const &node) override;
+    void way_delete(osmium::Way *way) override;
+    void relation_delete(osmium::Relation const &rel) override;
 
     int app_as_point();
     int app_as_linestring();
@@ -159,29 +159,28 @@ public:
     int app_as_multipolygon();
     int app_as_geometrycollection();
 
+    int app_define_locator();
     int app_define_table();
     int app_define_expire_output();
     int app_get_bbox();
-    int app_mark_way();
 
-    int table_tostring();
-    int table_add_row();
     int table_insert();
-    int table_name();
-    int table_schema();
-    int table_cluster();
-    int table_columns();
+    int table_in_id_cache();
 
-    int expire_output_tostring();
-    int expire_output_name();
-    int expire_output_minzoom();
-    int expire_output_maxzoom();
-    int expire_output_filename();
-    int expire_output_schema();
-    int expire_output_table();
+    // Get the flex table that is as first parameter on the Lua stack.
+    flex_table_t &get_table_from_param();
+
+    // Get the expire output that is as first parameter on the Lua stack.
+    expire_output_t &get_expire_output_from_param();
+
+    // Get the flex locator that is as first parameter on the Lua stack.
+    locator_t &get_locator_from_param();
 
 private:
     void select_relation_members();
+
+    /// Call a Lua function that was "prepared" earlier.
+    void call_lua_function(prepared_lua_function_t func);
 
     /**
      * Call a Lua function that was "prepared" earlier with the OSMObject
@@ -190,17 +189,15 @@ private:
     void call_lua_function(prepared_lua_function_t func,
                            osmium::OSMObject const &object);
 
-    /// Aquire the lua_mutex and the call `call_lua_function()`.
+    /// Aquire the lua_mutex and then call `call_lua_function()`.
+    void get_mutex_and_call_lua_function(prepared_lua_function_t func);
+
     void get_mutex_and_call_lua_function(prepared_lua_function_t func,
                                          osmium::OSMObject const &object);
 
-    void init_lua(std::string const &filename);
+    void process_relation();
 
-    // Get the flex table that is as first parameter on the Lua stack.
-    flex_table_t const &get_table_from_param();
-
-    // Get the expire output that is as first parameter on the Lua stack.
-    expire_output_t const &get_expire_output_from_param();
+    void init_lua(std::string const &filename, properties_t const &properties);
 
     void check_context_and_state(char const *name, char const *context,
                                  bool condition);
@@ -208,26 +205,39 @@ private:
     osmium::OSMObject const &
     check_and_get_context_object(flex_table_t const &table);
 
-    geom::geometry_t run_transform(reprojection const &proj,
-                                   geom_transform_t const *transform,
-                                   osmium::Node const &node);
-
-    geom::geometry_t run_transform(reprojection const &proj,
-                                   geom_transform_t const *transform,
-                                   osmium::Way const &way);
-
-    geom::geometry_t run_transform(reprojection const &proj,
-                                   geom_transform_t const *transform,
-                                   osmium::Relation const &relation);
-
-    template <typename OBJECT>
-    void add_row(table_connection_t *table_connection, OBJECT const &object);
+    void node_delete(osmid_t id);
+    void way_delete(osmid_t id);
+    void relation_delete(osmid_t id);
 
     void delete_from_table(table_connection_t *table_connection,
+                           pg_conn_t const &db_connection,
                            osmium::item_type type, osmid_t osm_id);
+
     void delete_from_tables(osmium::item_type type, osmid_t osm_id);
 
+    /**
+     * Actually do expire from the geometries in the cache. Diff expire is
+     * only enabled in stage 1c, because we are only sure then that only the
+     * geometry changed and nothing else.
+     */
+    void expire_geoms_from_cache(bool enable_diff_expire = false);
+
     lua_State *lua_state() noexcept { return m_lua_state.get(); }
+
+    void create_id_cache(flex_table_t const &table)
+    {
+        if (table.num() >= m_id_caches.size()) {
+            m_id_caches.resize(table.num() + 1);
+        }
+        m_id_caches[table.num()] = std::make_shared<idlist_t>();
+    }
+
+    idlist_t &get_id_cache(flex_table_t const &table)
+    {
+        auto& c = m_id_caches[table.num()];
+        assert(c);
+        return *c;
+    }
 
     class way_cache_t
     {
@@ -258,10 +268,7 @@ private:
          */
         bool add_members(middle_query_t const &middle);
 
-        osmium::Relation const &get() const noexcept
-        {
-            return *m_relation;
-        }
+        osmium::Relation const &get() const noexcept { return *m_relation; }
 
         osmium::memory::Buffer const &members_buffer() const noexcept
         {
@@ -280,17 +287,26 @@ private:
 
     }; // relation_cache_t
 
+    std::shared_ptr<std::vector<locator_t>> m_locators =
+        std::make_shared<std::vector<locator_t>>();
+
     std::shared_ptr<std::vector<flex_table_t>> m_tables =
         std::make_shared<std::vector<flex_table_t>>();
 
     std::shared_ptr<std::vector<expire_output_t>> m_expire_outputs =
         std::make_shared<std::vector<expire_output_t>>();
 
+    std::vector<std::shared_ptr<idlist_t>> m_id_caches;
+
     std::vector<table_connection_t> m_table_connections;
 
-    // This is shared between all clones of the output and must only be
+    /// The connection to the database server.
+    pg_conn_t m_db_connection;
+
+    // These are shared between all clones of the output and must only be
     // accessed while protected using the lua_mutex.
-    std::shared_ptr<idset_t> m_stage2_way_ids = std::make_shared<idset_t>();
+    std::shared_ptr<idlist_t> m_stage2_node_ids = std::make_shared<idlist_t>();
+    std::shared_ptr<idlist_t> m_stage2_way_ids = std::make_shared<idlist_t>();
 
     std::shared_ptr<db_copy_thread_t> m_copy_thread;
 
@@ -298,26 +314,45 @@ private:
     // accessed while protected using the lua_mutex.
     std::shared_ptr<lua_State> m_lua_state;
 
-    std::vector<expire_tiles> m_expire_tiles;
+    // Caches for old and new geometries from a single OSM object
+    geometry_cache_t m_geometry_cache;
+
+    std::vector<expire_tiles_t> m_expire_tiles;
 
     way_cache_t m_way_cache;
     relation_cache_t m_relation_cache;
     osmium::Node const *m_context_node = nullptr;
 
-    prepared_lua_function_t m_process_node{};
-    prepared_lua_function_t m_process_way{};
-    prepared_lua_function_t m_process_relation{};
-    prepared_lua_function_t m_select_relation_members{};
+    osmium::memory::Buffer m_area_buffer;
+
+    prepared_lua_function_t m_process_node;
+    prepared_lua_function_t m_process_way;
+    prepared_lua_function_t m_process_relation;
+
+    prepared_lua_function_t m_process_untagged_node;
+    prepared_lua_function_t m_process_untagged_way;
+    prepared_lua_function_t m_process_untagged_relation;
+
+    prepared_lua_function_t m_process_deleted_node;
+    prepared_lua_function_t m_process_deleted_way;
+    prepared_lua_function_t m_process_deleted_relation;
+
+    prepared_lua_function_t m_select_relation_members;
+
+    prepared_lua_function_t m_after_nodes;
+    prepared_lua_function_t m_after_ways;
+    prepared_lua_function_t m_after_relations;
 
     calling_context m_calling_context = calling_context::main;
 
     /**
      * This is set before calling stage1c process_relation() to disable the
-     * add_row() command.
+     * insert() command.
      */
-    bool m_disable_add_row = false;
-
-    bool m_add_row_has_never_been_called = true;
+    bool m_disable_insert = false;
 };
+
+int lua_trampoline_table_insert(lua_State *lua_state);
+int lua_trampoline_table_in_id_cache(lua_State *lua_state);
 
 #endif // OSM2PGSQL_OUTPUT_FLEX_HPP

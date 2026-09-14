@@ -3,16 +3,19 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "canvas.hpp"
 
 #include "raster.hpp"
+#include "tile.hpp"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+
+#include <cassert>
 
 void canvas_t::open_close(unsigned int buffer_size)
 {
@@ -135,20 +138,4 @@ std::string canvas_t::to_wkb(tile_t const &tile, double margin) const
 void canvas_t::merge(canvas_t const &other)
 {
     cv::bitwise_or(m_rast, other.m_rast, m_rast);
-}
-
-std::string to_hex(std::string const &in)
-{
-    std::string result;
-    result.reserve(in.size() * 2);
-
-    char const *const lookup_hex = "0123456789ABCDEF";
-
-    for (const auto c : in) {
-        unsigned int const num = static_cast<unsigned char>(c);
-        result += lookup_hex[(num >> 4U) & 0xfU];
-        result += lookup_hex[num & 0xfU];
-    }
-
-    return result;
 }

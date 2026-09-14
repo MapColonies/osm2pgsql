@@ -6,18 +6,22 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "gen-base.hpp"
 
+#include <cstddef>
 #include <string_view>
+
+class params_t;
+class pg_conn_t;
 
 class gen_di_t : public gen_base_t
 {
 public:
-    gen_di_t(pg_conn_t *connection, params_t *params);
+    gen_di_t(pg_conn_t *connection, bool append, params_t *params);
 
     void process() override;
 

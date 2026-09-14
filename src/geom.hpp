@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -16,12 +16,15 @@
  * Basic geometry types and functions.
  */
 
+#include "projection.hpp"
+
 #include <osmium/osm/location.hpp>
 
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <initializer_list>
+#include <numeric>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -33,6 +36,11 @@ class nullgeom_t
 {
 public:
     [[nodiscard]] constexpr static std::size_t num_geometries() noexcept
+    {
+        return 0;
+    }
+
+    [[nodiscard]] constexpr static std::size_t n_points() noexcept
     {
         return 0;
     }
@@ -63,6 +71,11 @@ public:
     constexpr point_t(double x, double y) noexcept : m_x(x), m_y(y) {}
 
     [[nodiscard]] constexpr static std::size_t num_geometries() noexcept
+    {
+        return 1;
+    }
+
+    [[nodiscard]] constexpr static std::size_t n_points() noexcept
     {
         return 1;
     }
@@ -146,6 +159,11 @@ public:
         return 1;
     }
 
+    [[nodiscard]] std::size_t n_points() const noexcept
+    {
+        return size();
+    }
+
 }; // class linestring_t
 
 class ring_t : public point_list_t
@@ -184,6 +202,8 @@ public:
 
     friend bool operator!=(polygon_t const &a, polygon_t const &b) noexcept;
 
+    [[nodiscard]] std::size_t n_points() const;
+
 private:
     ring_t m_outer;
     std::vector<ring_t> m_inners;
@@ -198,17 +218,21 @@ public:
     using iterator = typename std::vector<GEOM>::iterator;
     using value_type = GEOM;
 
-    static constexpr bool const for_point = std::is_same_v<GEOM, point_t>;
-
     [[nodiscard]] std::size_t num_geometries() const noexcept
     {
         return m_geometry.size();
     }
 
-    GEOM &
-    add_geometry(typename std::conditional_t<for_point, point_t, GEOM &&> geom)
+    GEOM &add_geometry(GEOM const &geom)
     {
-        m_geometry.push_back(std::forward<GEOM>(geom));
+        m_geometry.push_back(geom);
+        return m_geometry.back();
+    }
+
+    template <typename T>
+    GEOM &add_geometry(T &&geom)
+    {
+        m_geometry.push_back(std::forward<T>(geom));
         return m_geometry.back();
     }
 
@@ -251,6 +275,15 @@ public:
 
     void reserve(std::size_t size) { m_geometry.reserve(size); }
 
+    [[nodiscard]] std::size_t n_points() const
+    {
+        return std::accumulate(m_geometry.cbegin(), m_geometry.cend(),
+                               std::size_t{0},
+                               [](std::size_t sum, auto const &geom) {
+                                   return sum + geom.n_points();
+                               });
+    }
+
 private:
     std::vector<GEOM> m_geometry;
 
@@ -274,31 +307,33 @@ public:
 
     // point_t is small and trivially copyable, no move needed like for the
     // other constructors.
-    constexpr explicit geometry_t(point_t geom, int srid = 4326)
+    constexpr explicit geometry_t(point_t geom, int srid = PROJ_LATLONG)
     : m_geom(geom), m_srid(srid)
     {}
 
-    constexpr explicit geometry_t(linestring_t &&geom, int srid = 4326)
+    constexpr explicit geometry_t(linestring_t &&geom, int srid = PROJ_LATLONG)
     : m_geom(std::move(geom)), m_srid(srid)
     {}
 
-    constexpr explicit geometry_t(polygon_t &&geom, int srid = 4326)
+    constexpr explicit geometry_t(polygon_t &&geom, int srid = PROJ_LATLONG)
     : m_geom(std::move(geom)), m_srid(srid)
     {}
 
-    constexpr explicit geometry_t(multipoint_t &&geom, int srid = 4326)
+    constexpr explicit geometry_t(multipoint_t &&geom, int srid = PROJ_LATLONG)
     : m_geom(std::move(geom)), m_srid(srid)
     {}
 
-    constexpr explicit geometry_t(multilinestring_t &&geom, int srid = 4326)
+    constexpr explicit geometry_t(multilinestring_t &&geom,
+                                  int srid = PROJ_LATLONG)
     : m_geom(std::move(geom)), m_srid(srid)
     {}
 
-    constexpr explicit geometry_t(multipolygon_t &&geom, int srid = 4326)
+    constexpr explicit geometry_t(multipolygon_t &&geom,
+                                  int srid = PROJ_LATLONG)
     : m_geom(std::move(geom)), m_srid(srid)
     {}
 
-    constexpr explicit geometry_t(collection_t &&geom, int srid = 4326)
+    constexpr explicit geometry_t(collection_t &&geom, int srid = PROJ_LATLONG)
     : m_geom(std::move(geom)), m_srid(srid)
     {}
 
@@ -392,12 +427,14 @@ public:
         return !(a == b);
     }
 
+    [[nodiscard]] std::size_t n_points() const;
+
 private:
     std::variant<nullgeom_t, point_t, linestring_t, polygon_t, multipoint_t,
                  multilinestring_t, multipolygon_t, collection_t>
         m_geom = nullgeom_t{};
 
-    int m_srid = 4326;
+    int m_srid = PROJ_LATLONG;
 
 }; // class geometry_t
 

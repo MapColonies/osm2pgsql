@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -15,28 +15,38 @@
  * Case sensitive wild card match with a string.
  * * matches any string or no character.
  * ? matches any single character.
- * anything else etc must match the character exactly.
+ * anything else must match the character exactly.
  *
  * Returns if a match was found.
  */
-bool wildMatch(char const *first, char const *second)
+// NOLINTNEXTLINE(misc-use-internal-linkage) Seems there is a bug in the checker
+bool wild_match(char const *expr, char const *str) noexcept
 {
-    // Code borrowed from
+    // Code based on
     // http://www.geeksforgeeks.org/wildcard-character-matching/
-    if (*first == '\0' && *second == '\0') {
+    if (*expr == '\0' && *str == '\0') {
         return true;
     }
 
-    if (*first == '*' && *(first + 1) != '\0' && *second == '\0') {
+    if (*expr == '*') {
+        while (*(expr + 1) == '*') {
+            ++expr;
+        }
+    }
+
+    if (*expr == '*' && *(expr + 1) != '\0' && *str == '\0') {
         return false;
     }
 
-    if (*first == '?' || *first == *second) {
-        return wildMatch(first + 1, second + 1);
+    if (*expr == '?' || *expr == *str) {
+        if (*str == '\0') {
+            return false;
+        }
+        return wild_match(expr + 1, str + 1);
     }
 
-    if (*first == '*') {
-        return wildMatch(first + 1, second) || wildMatch(first, second + 1);
+    if (*expr == '*') {
+        return wild_match(expr + 1, str) || wild_match(expr, str + 1);
     }
 
     return false;

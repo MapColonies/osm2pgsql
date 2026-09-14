@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,12 +12,12 @@
 #include "expire-output.hpp"
 #include "format.hpp"
 #include "lua-utils.hpp"
-#include "pgsql.hpp"
-#include "util.hpp"
 
 #include <lua.hpp>
 
-static expire_output_t &
+namespace {
+
+expire_output_t &
 create_expire_output(lua_State *lua_state, std::string const &default_schema,
                      std::vector<expire_output_t> *expire_outputs)
 {
@@ -62,8 +62,39 @@ create_expire_output(lua_State *lua_state, std::string const &default_schema,
     }
     lua_pop(lua_state, 1); // "minzoom"
 
+    // optional "max_tiles_geometry" field
+    auto const max_tiles_geometry = luaX_get_table_optional_uint64(
+        lua_state, "max_tiles_geometry", -1,
+        "The 'max_tiles_geometry' field in a expire output", 1, (4ULL << 20ULL),
+        "1 and 4 << 20");
+    if (max_tiles_geometry > 0) {
+        new_expire_output.set_max_tiles_geometry(max_tiles_geometry);
+    }
+    lua_pop(lua_state, 1); // "max_tiles_geometry"
+
+    // optional "max_tiles_overall" field
+    auto const max_tiles_overall = luaX_get_table_optional_uint64(
+        lua_state, "max_tiles_overall", -1,
+        "The 'max_tiles_overall' field in a expire output", 1, (4ULL << 20ULL),
+        "1 and 4 << 20");
+    if (max_tiles_overall > 0) {
+        new_expire_output.set_max_tiles_overall(max_tiles_overall);
+    }
+    lua_pop(lua_state, 1); // "max_tiles_overall"
+
     return new_expire_output;
 }
+
+TRAMPOLINE_WRAPPED_OBJECT(expire_output, tostring)
+TRAMPOLINE_WRAPPED_OBJECT(expire_output, filename)
+TRAMPOLINE_WRAPPED_OBJECT(expire_output, maxzoom)
+TRAMPOLINE_WRAPPED_OBJECT(expire_output, minzoom)
+TRAMPOLINE_WRAPPED_OBJECT(expire_output, schema)
+TRAMPOLINE_WRAPPED_OBJECT(expire_output, table)
+TRAMPOLINE_WRAPPED_OBJECT(expire_output, max_tiles_geometry)
+TRAMPOLINE_WRAPPED_OBJECT(expire_output, max_tiles_overall)
+
+} // anonymous namespace
 
 int setup_flex_expire_output(lua_State *lua_state,
                              std::string const &default_schema,
@@ -79,8 +110,83 @@ int setup_flex_expire_output(lua_State *lua_state,
     void *ptr = lua_newuserdata(lua_state, sizeof(std::size_t));
     auto *num = new (ptr) std::size_t{};
     *num = expire_outputs->size() - 1;
-    luaL_getmetatable(lua_state, osm2pgsql_expire_output_name);
+    luaL_getmetatable(lua_state, OSM2PGSQL_EXPIRE_OUTPUT_CLASS);
     lua_setmetatable(lua_state, -2);
 
+    return 1;
+}
+
+/**
+ * Define the osm2pgsql.ExpireOutput class/metatable.
+ */
+void lua_wrapper_expire_output_t::init(lua_State *lua_state)
+{
+    luaX_set_up_metatable(
+        lua_state, "ExpireOutput", OSM2PGSQL_EXPIRE_OUTPUT_CLASS,
+        {{"__tostring", lua_trampoline_expire_output_tostring},
+         {"filename", lua_trampoline_expire_output_filename},
+         {"maxzoom", lua_trampoline_expire_output_maxzoom},
+         {"minzoom", lua_trampoline_expire_output_minzoom},
+         {"schema", lua_trampoline_expire_output_schema},
+         {"table", lua_trampoline_expire_output_table},
+         {"max_tiles_geometry",
+          lua_trampoline_expire_output_max_tiles_geometry},
+         {"max_tiles_overall",
+          lua_trampoline_expire_output_max_tiles_overall}});
+}
+
+int lua_wrapper_expire_output_t::tostring() const
+{
+    std::string const str =
+        fmt::format("osm2pgsql.ExpireOutput[minzoom={},maxzoom={},filename={},"
+                    "schema={},table={}]",
+                    self().minzoom(), self().maxzoom(), self().filename(),
+                    self().schema(), self().table());
+    luaX_pushstring(lua_state(), str);
+
+    return 1;
+}
+
+int lua_wrapper_expire_output_t::filename() const noexcept
+{
+    luaX_pushstring(lua_state(), self().filename());
+    return 1;
+}
+
+int lua_wrapper_expire_output_t::maxzoom() const noexcept
+{
+    lua_pushinteger(lua_state(), self().maxzoom());
+    return 1;
+}
+
+int lua_wrapper_expire_output_t::minzoom() const noexcept
+{
+    lua_pushinteger(lua_state(), self().minzoom());
+    return 1;
+}
+
+int lua_wrapper_expire_output_t::schema() const noexcept
+{
+    luaX_pushstring(lua_state(), self().schema());
+    return 1;
+}
+
+int lua_wrapper_expire_output_t::table() const noexcept
+{
+    luaX_pushstring(lua_state(), self().table());
+    return 1;
+}
+
+int lua_wrapper_expire_output_t::max_tiles_geometry() const noexcept
+{
+    lua_pushinteger(lua_state(),
+                    static_cast<lua_Integer>(self().max_tiles_geometry()));
+    return 1;
+}
+
+int lua_wrapper_expire_output_t::max_tiles_overall() const noexcept
+{
+    lua_pushinteger(lua_state(),
+                    static_cast<lua_Integer>(self().max_tiles_overall()));
     return 1;
 }

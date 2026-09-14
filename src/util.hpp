@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -25,23 +25,23 @@
 
 namespace util {
 
-class double_to_buffer
+class double_to_buffer_t
 {
-    static constexpr std::size_t buffer_size = 32;
+    static constexpr std::size_t BUFFER_SIZE = 32;
 
 public:
-    explicit double_to_buffer(double value)
+    explicit double_to_buffer_t(double value)
     {
         auto const result =
-            fmt::format_to_n(m_buffer.begin(), buffer_size - 1, "{:g}", value);
-        assert(result.size < buffer_size);
+            fmt::format_to_n(m_buffer.begin(), BUFFER_SIZE - 1, "{:g}", value);
+        assert(result.size < BUFFER_SIZE);
         *result.out = '\0';
     }
 
     char const *c_str() const noexcept { return m_buffer.data(); }
 
 private:
-    std::array<char, buffer_size> m_buffer{};
+    std::array<char, BUFFER_SIZE> m_buffer{};
 };
 
 /**

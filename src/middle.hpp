@@ -6,18 +6,20 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
-#include <osmium/index/id_set.hpp>
 #include <osmium/memory/buffer.hpp>
 #include <osmium/osm/entity_bits.hpp>
 
+#include <cstdint>
 #include <memory>
 
 #include "osmtypes.hpp"
 #include "thread-pool.hpp"
+
+class idlist_t;
 
 struct options_t;
 struct output_requirements;
@@ -49,10 +51,21 @@ struct middle_query_t : std::enable_shared_from_this<middle_query_t>
     virtual size_t nodes_get_list(osmium::WayNodeList *nodes) const = 0;
 
     /**
+     * Retrieves a single node from the nodes storage
+     * and stores it in the given osmium buffer.
+     *
+     * \param id     id of the node to retrieve
+     * \param buffer osmium buffer where to put the node
+     *
+     * \return true if the node was retrieved
+     */
+    virtual bool node_get(osmid_t id, osmium::memory::Buffer *buffer) const = 0;
+
+    /**
      * Retrieves a single way from the ways storage
      * and stores it in the given osmium buffer.
      *
-     * \param id     id of the way to retrive
+     * \param id     id of the way to retrieve
      * \param buffer osmium buffer where to put the way
      *
      * The function does not retrieve the node locations.
@@ -76,10 +89,10 @@ struct middle_query_t : std::enable_shared_from_this<middle_query_t>
                     osmium::osm_entity_bits::type types) const = 0;
 
     /**
-     * Retrives a single relation from the relation storage
+     * Retrieves a single relation from the relation storage
      * and stores it in the given osmium buffer.
      *
-     * \param id     id of the relation to retrive
+     * \param id     id of the relation to retrieve
      * \param buffer osmium buffer where to put the relation
      *
      * \return true if the relation was retrieved
@@ -87,8 +100,6 @@ struct middle_query_t : std::enable_shared_from_this<middle_query_t>
     virtual bool relation_get(osmid_t id,
                               osmium::memory::Buffer *buffer) const = 0;
 };
-
-inline middle_query_t::~middle_query_t() = default;
 
 /**
  * Interface for storing "raw" OSM data in an intermediate object store and
@@ -149,16 +160,14 @@ public:
 #endif
     }
 
-    virtual void get_node_parents(
-        osmium::index::IdSetSmall<osmid_t> const & /*changed_nodes*/,
-        osmium::index::IdSetSmall<osmid_t> * /*parent_ways*/,
-        osmium::index::IdSetSmall<osmid_t> * /*parent_relations*/) const
+    virtual void get_node_parents(idlist_t const & /*changed_nodes*/,
+                                  idlist_t * /*parent_ways*/,
+                                  idlist_t * /*parent_relations*/) const
     {
     }
 
-    virtual void get_way_parents(
-        osmium::index::IdSetSmall<osmid_t> const & /*changed_ways*/,
-        osmium::index::IdSetSmall<osmid_t> * /*parent_relations*/) const
+    virtual void get_way_parents(idlist_t const & /*changed_ways*/,
+                                 idlist_t * /*parent_relations*/) const
     {
     }
 
@@ -174,7 +183,7 @@ protected:
     }
 
 #ifndef NDEBUG
-    enum class middle_state
+    enum class middle_state : uint8_t
     {
         constructed,
         started,
@@ -191,8 +200,6 @@ protected:
 private:
     std::shared_ptr<thread_pool_t> m_thread_pool;
 }; // class middle_t
-
-inline middle_t::~middle_t() = default;
 
 /// Factory function: Instantiate the middle based on the command line options.
 std::shared_ptr<middle_t>

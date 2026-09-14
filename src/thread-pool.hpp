@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -60,7 +60,7 @@ public:
     std::chrono::microseconds runtime() const noexcept { return m_result; }
 
 private:
-    std::future<std::chrono::microseconds> m_future{};
+    std::future<std::chrono::microseconds> m_future;
     std::chrono::microseconds m_result{};
 }; // class task_result_t
 
@@ -95,6 +95,7 @@ public:
      *         of the task can be queried.
      */
     template <typename TFunction>
+    // NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward) false positive
     std::future<std::chrono::microseconds> submit(TFunction &&func)
     {
         std::packaged_task<std::chrono::microseconds()> task{
@@ -123,23 +124,24 @@ private:
      * This class makes sure all pool threads will be joined when
      * the pool is destructed.
      */
-    class thread_joiner
+    class thread_joiner_t
     {
 
         std::vector<std::thread> *m_threads;
 
     public:
-        explicit thread_joiner(std::vector<std::thread> *threads)
+        explicit thread_joiner_t(std::vector<std::thread> *threads)
         : m_threads(threads)
-        {}
+        {
+        }
 
-        thread_joiner(thread_joiner const &) = delete;
-        thread_joiner &operator=(thread_joiner const &) = delete;
+        thread_joiner_t(thread_joiner_t const &) = delete;
+        thread_joiner_t &operator=(thread_joiner_t const &) = delete;
 
-        thread_joiner(thread_joiner &&) = delete;
-        thread_joiner &operator=(thread_joiner &&) = delete;
+        thread_joiner_t(thread_joiner_t &&) = delete;
+        thread_joiner_t &operator=(thread_joiner_t &&) = delete;
 
-        ~thread_joiner()
+        ~thread_joiner_t()
         {
             for (auto &thread : *m_threads) {
                 if (thread.joinable()) {
@@ -148,13 +150,13 @@ private:
             }
         }
 
-    }; // class thread_joiner
+    }; // class thread_joiner_t
 
-    static constexpr std::size_t const max_queue_size = 32;
+    static constexpr std::size_t MAX_QUEUE_SIZE = 32;
 
     osmium::thread::Queue<osmium::thread::function_wrapper> m_work_queue;
     std::vector<std::thread> m_threads;
-    thread_joiner m_joiner;
+    thread_joiner_t m_joiner;
 
     /**
      * This is the function run in each worker thread. It will loop over

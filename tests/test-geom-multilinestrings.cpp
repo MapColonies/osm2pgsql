@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -15,6 +15,7 @@
 #include "geom-functions.hpp"
 #include "geom-output.hpp"
 #include "geom.hpp"
+#include "projection.hpp"
 
 #include <array>
 
@@ -31,10 +32,13 @@ TEST_CASE("create_multilinestring with single line", "[NoDB]")
 
     REQUIRE(geom.is_multilinestring());
     REQUIRE(geometry_type(geom) == "MULTILINESTRING");
+    REQUIRE(geom.n_points() == 2);
     REQUIRE(dimension(geom) == 1);
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(0.0));
+    REQUIRE(spherical_area(geom) == Approx(0.0));
     REQUIRE(length(geom) == Approx(1.0));
+    REQUIRE(spherical_length(geom) == Approx(111302.64933943082));
     auto const &ml = geom.get<geom::multilinestring_t>();
     REQUIRE(ml.num_geometries() == 1);
     REQUIRE(ml[0] == expected);
@@ -57,9 +61,12 @@ TEST_CASE("create_multilinestring with single line and no force_multi",
 
     REQUIRE(geom.is_linestring());
     REQUIRE(geometry_type(geom) == "LINESTRING");
+    REQUIRE(geom.n_points() == 2);
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(0.0));
+    REQUIRE(spherical_area(geom) == Approx(0.0));
     REQUIRE(length(geom) == Approx(1.0));
+    REQUIRE(spherical_length(geom) == Approx(111302.64933943082));
     auto const &l = geom.get<geom::linestring_t>();
     REQUIRE(l.num_geometries() == 1);
     REQUIRE(l == expected);
@@ -92,7 +99,9 @@ TEST_CASE(
     REQUIRE(geometry_type(geom) == "LINESTRING");
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(0.0));
+    REQUIRE(spherical_area(geom) == Approx(0.0));
     REQUIRE(length(geom) == Approx(1.0));
+    REQUIRE(spherical_length(geom) == Approx(111302.64933943082));
     auto const &l = geom.get<geom::linestring_t>();
     REQUIRE(l.num_geometries() == 1);
     REQUIRE(l == expected);
@@ -128,6 +137,7 @@ TEST_CASE("create_multilinestring from two non-joined lines", "[NoDB]")
         geom::line_merge(geom::create_multilinestring(buffer.buffer()));
 
     REQUIRE(geom.is_multilinestring());
+    REQUIRE(geom.n_points() == 4);
     REQUIRE(dimension(geom) == 1);
     auto const &ml = geom.get<geom::multilinestring_t>();
     REQUIRE(ml.num_geometries() == 2);
@@ -148,6 +158,7 @@ TEST_CASE("create_multilinestring from two lines end to end", "[NoDB]")
 
     REQUIRE(geom.is_multilinestring());
     auto const &ml = geom.get<geom::multilinestring_t>();
+    REQUIRE(ml.n_points() == 3);
     REQUIRE(ml.num_geometries() == 1);
     REQUIRE(ml[0] == expected);
 }
@@ -288,6 +299,7 @@ TEST_CASE("create_multilinestring from Y shape", "[NoDB]")
     REQUIRE(geom.is_multilinestring());
     auto const &ml = geom.get<geom::multilinestring_t>();
     REQUIRE(ml.num_geometries() == 2);
+    REQUIRE(ml.n_points() == 5);
     REQUIRE(ml[0] == expected[0]);
     REQUIRE(ml[1] == expected[1]);
 }
@@ -339,11 +351,10 @@ TEST_CASE("create_multilinestring and simplify", "[NoDB]")
     buffer.add_way("w20 Nn10x1y1,n11x1y2,n12x1y3");
     buffer.add_way("w21 Nn12x1y3,n13x2y3,n11x1y2");
 
-    auto const geom =
-        geom::create_multilinestring(buffer.buffer());
+    auto const geom = geom::create_multilinestring(buffer.buffer());
 
     REQUIRE(geom.is_multilinestring());
-    REQUIRE(geom.srid() == 4326);
+    REQUIRE(geom.srid() == PROJ_LATLONG);
     auto const &mls = geom.get<geom::multilinestring_t>();
     REQUIRE(mls.num_geometries() == 2);
     REQUIRE(mls[0] == geom::linestring_t{{1, 1}, {1, 2}, {1, 3}});
@@ -353,7 +364,7 @@ TEST_CASE("create_multilinestring and simplify", "[NoDB]")
     {
         auto const simplified_geom = geom::simplify(geom, 0.1);
         REQUIRE(simplified_geom.is_multilinestring());
-        REQUIRE(simplified_geom.srid() == 4326);
+        REQUIRE(simplified_geom.srid() == PROJ_LATLONG);
         auto const &simplified_mls =
             simplified_geom.get<geom::multilinestring_t>();
         REQUIRE(simplified_mls.num_geometries() == 2);
@@ -366,7 +377,7 @@ TEST_CASE("create_multilinestring and simplify", "[NoDB]")
     {
         auto const simplified_geom = geom::simplify(geom, 10.0);
         REQUIRE(simplified_geom.is_multilinestring());
-        REQUIRE(simplified_geom.srid() == 4326);
+        REQUIRE(simplified_geom.srid() == PROJ_LATLONG);
         auto const &simplified_mls =
             simplified_geom.get<geom::multilinestring_t>();
         REQUIRE(simplified_mls.num_geometries() == 2);

@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -29,10 +29,13 @@ TEST_CASE("multipoint_t with a single point", "[NoDB]")
 
     REQUIRE(geom.is_multipoint());
     REQUIRE(geometry_type(geom) == "MULTIPOINT");
+    REQUIRE(geom.n_points() == 1);
     REQUIRE(dimension(geom) == 0);
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(0.0));
+    REQUIRE(spherical_area(geom) == Approx(0.0));
     REQUIRE(length(geom) == Approx(0.0));
+    REQUIRE(spherical_length(geom) == Approx(0.0));
     REQUIRE(reverse(geom) == geom);
     REQUIRE(centroid(geom) == geom::geometry_t{point});
 
@@ -53,8 +56,10 @@ TEST_CASE("multipoint_t with several points", "[NoDB]")
 
     REQUIRE(geom.is_multipoint());
     REQUIRE(geometry_type(geom) == "MULTIPOINT");
+    REQUIRE(geom.n_points() == 3);
     REQUIRE(num_geometries(geom) == 3);
     REQUIRE(area(geom) == Approx(0.0));
+    REQUIRE(spherical_area(geom) == Approx(0.0));
     REQUIRE(length(geom) == Approx(0.0));
     REQUIRE(reverse(geom) == geom);
     REQUIRE(centroid(geom) == geom::geometry_t{geom::point_t{2, 1}});
@@ -83,6 +88,7 @@ TEST_CASE("create_multipoint from OSM data", "[NoDB]")
 
     REQUIRE(geometry_type(geom) == "MULTIPOINT");
     REQUIRE(dimension(geom) == 0);
+    REQUIRE(geom.n_points() == 4);
     REQUIRE(num_geometries(geom) == 4);
 
     auto const &c = geom.get<geom::multipoint_t>();
@@ -92,6 +98,7 @@ TEST_CASE("create_multipoint from OSM data", "[NoDB]")
     REQUIRE(c[3] == geom::point_t{3, 1});
 
     REQUIRE(area(geom) == Approx(0.0));
+    REQUIRE(spherical_area(geom) == Approx(0.0));
     REQUIRE(length(geom) == Approx(0.0));
     REQUIRE(centroid(geom) == geom::geometry_t{geom::point_t{2, 1}});
 }
@@ -118,6 +125,7 @@ TEST_CASE("create_multipoint from OSM data with only a single point", "[NoDB]")
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(geom.get<geom::point_t>() == geom::point_t{1, 0});
     REQUIRE(area(geom) == Approx(0.0));
+    REQUIRE(spherical_area(geom) == Approx(0.0));
     REQUIRE(length(geom) == Approx(0.0));
     REQUIRE(centroid(geom) == geom::geometry_t{geom::point_t{1, 0}});
 }

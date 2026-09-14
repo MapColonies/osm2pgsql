@@ -3,34 +3,40 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "flex-lua-index.hpp"
+
+#include "flex-index.hpp"
+#include "flex-table.hpp"
+#include "format.hpp"
 #include "lua-utils.hpp"
-#include "output-flex.hpp"
 #include "pgsql-capabilities.hpp"
 #include "util.hpp"
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
-static void check_and_add_column(flex_table_t const &table,
-                                 std::vector<std::string> *columns,
-                                 char const *column_name)
+namespace {
+
+void check_and_add_column(flex_table_t const &table,
+                          std::vector<std::string> *columns,
+                          char const *column_name)
 {
-    auto const *column = util::find_by_name(table, column_name);
+    auto const *column = util::find_by_name(table.columns(), column_name);
     if (!column) {
         throw fmt_error("Unknown column '{}' in table '{}'.", column_name,
                         table.name());
     }
-    columns->push_back(column_name);
+    columns->emplace_back(column_name);
 }
 
-static void check_and_add_columns(flex_table_t const &table,
-                                  std::vector<std::string> *columns,
-                                  lua_State *lua_state)
+void check_and_add_columns(flex_table_t const &table,
+                           std::vector<std::string> *columns,
+                           lua_State *lua_state)
 {
     if (!luaX_is_array(lua_state)) {
         throw std::runtime_error{
@@ -45,6 +51,8 @@ static void check_and_add_columns(flex_table_t const &table,
         check_and_add_column(table, columns, lua_tostring(lua_state, -1));
     });
 }
+
+} // anonymous namespace
 
 void flex_lua_setup_index(lua_State *lua_state, flex_table_t *table)
 {
@@ -78,6 +86,12 @@ void flex_lua_setup_index(lua_State *lua_state, flex_table_t *table)
     }
     lua_pop(lua_state, 1);
 
+    // get name
+    std::string const name =
+        luaX_get_table_string(lua_state, "name", -1, "Index definition", "");
+    lua_pop(lua_state, 1);
+    index.set_name(name);
+
     // get expression
     std::string const expression = luaX_get_table_string(
         lua_state, "expression", -1, "Index definition", "");
@@ -91,23 +105,17 @@ void flex_lua_setup_index(lua_State *lua_state, flex_table_t *table)
     // get include columns
     std::vector<std::string> include_columns;
     lua_getfield(lua_state, -1, "include");
-    if (get_database_version() >= 110000) {
-        if (lua_isstring(lua_state, -1)) {
-            check_and_add_column(*table, &include_columns,
-                                 lua_tostring(lua_state, -1));
-        } else if (lua_istable(lua_state, -1)) {
-            check_and_add_columns(*table, &include_columns, lua_state);
-        } else if (!lua_isnil(lua_state, -1)) {
-            throw std::runtime_error{
-                "The 'include' field in an index definition must contain a "
-                "string or an array."};
-        }
-        index.set_include_columns(include_columns);
+    if (lua_isstring(lua_state, -1)) {
+        check_and_add_column(*table, &include_columns,
+                             lua_tostring(lua_state, -1));
+    } else if (lua_istable(lua_state, -1)) {
+        check_and_add_columns(*table, &include_columns, lua_state);
     } else if (!lua_isnil(lua_state, -1)) {
-        throw fmt_error("Database version ({}) doesn't support"
-                        " include columns in indexes.",
-                        get_database_version());
+        throw std::runtime_error{
+            "The 'include' field in an index definition must contain a "
+            "string or an array."};
     }
+    index.set_include_columns(include_columns);
     lua_pop(lua_state, 1);
 
     // get tablespace

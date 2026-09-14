@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -58,6 +58,8 @@ type_id check_input(type_id const &last, osmium::OSMObject const &object)
 {
     return check_input(last, {object.type(), object.id()});
 }
+
+namespace {
 
 /**
  * A data source is where we get the OSM objects from, one at a time. It
@@ -120,9 +122,9 @@ private:
     using iterator = osmium::memory::Buffer::t_iterator<osmium::OSMObject>;
 
     std::unique_ptr<osmium::io::Reader> m_reader;
-    osmium::memory::Buffer m_buffer{};
-    iterator m_it{};
-    iterator m_end{};
+    osmium::memory::Buffer m_buffer;
+    iterator m_it;
+    iterator m_end;
     type_id m_last = {osmium::item_type::node, 0};
 
 }; // class data_source_t
@@ -172,37 +174,6 @@ private:
     data_source_t *m_source;
 
 }; // class queue_element_t
-
-std::vector<osmium::io::File>
-prepare_input_files(std::vector<std::string> const &input_files,
-                    std::string const &input_format, bool append)
-{
-    std::vector<osmium::io::File> files;
-
-    for (auto const &filename : input_files) {
-        osmium::io::File const file{filename, input_format};
-
-        if (file.format() == osmium::io::file_format::unknown) {
-            if (input_format.empty()) {
-                throw fmt_error("Cannot detect file format for '{}'."
-                                " Try using -r.",
-                                filename);
-            }
-            throw fmt_error("Unknown file format '{}'.", input_format);
-        }
-
-        if (!append && file.has_multiple_object_versions()) {
-            throw std::runtime_error{
-                "Reading an OSM change file only works in append mode."};
-        }
-
-        log_debug("Reading file: {}", filename);
-
-        files.emplace_back(file);
-    }
-
-    return files;
-}
 
 class input_context_t
 {
@@ -261,9 +232,8 @@ private:
     bool m_append;
 }; // class input_context_t
 
-static file_info process_single_file(osmium::io::File const &file,
-                                     osmdata_t *osmdata,
-                                     progress_display_t *progress, bool append)
+file_info process_single_file(osmium::io::File const &file, osmdata_t *osmdata,
+                              progress_display_t *progress, bool append)
 {
     file_info finfo;
 
@@ -288,10 +258,9 @@ static file_info process_single_file(osmium::io::File const &file,
     return finfo;
 }
 
-static file_info
-process_multiple_files(std::vector<osmium::io::File> const &files,
-                       osmdata_t *osmdata, progress_display_t *progress,
-                       bool append)
+file_info process_multiple_files(std::vector<osmium::io::File> const &files,
+                                 osmdata_t *osmdata,
+                                 progress_display_t *progress, bool append)
 {
     file_info finfo;
 
@@ -331,6 +300,39 @@ process_multiple_files(std::vector<osmium::io::File> const &files,
     }
 
     return finfo;
+}
+
+} // anonymous namespace
+
+std::vector<osmium::io::File>
+prepare_input_files(std::vector<std::string> const &input_files,
+                    std::string const &input_format, bool append)
+{
+    std::vector<osmium::io::File> files;
+
+    for (auto const &filename : input_files) {
+        osmium::io::File const file{filename, input_format};
+
+        if (file.format() == osmium::io::file_format::unknown) {
+            if (input_format.empty()) {
+                throw fmt_error("Cannot detect file format for '{}'."
+                                " Try using -r.",
+                                filename);
+            }
+            throw fmt_error("Unknown file format '{}'.", input_format);
+        }
+
+        if (!append && file.has_multiple_object_versions()) {
+            throw std::runtime_error{
+                "Reading an OSM change file only works in append mode."};
+        }
+
+        log_debug("Reading file: {}", filename);
+
+        files.emplace_back(file);
+    }
+
+    return files;
 }
 
 file_info process_files(std::vector<osmium::io::File> const &files,

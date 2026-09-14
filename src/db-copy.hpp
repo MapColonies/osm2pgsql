@@ -6,11 +6,16 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
+#include "osmtypes.hpp"
+#include "pgsql.hpp"
+#include "pgsql-params.hpp"
+
 #include <cassert>
+#include <cstddef>
 #include <condition_variable>
 #include <deque>
 #include <future>
@@ -19,10 +24,8 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
-
-#include "osmtypes.hpp"
-#include "pgsql.hpp"
 
 /**
  * Table information necessary for building SQL queries.
@@ -72,12 +75,11 @@ private:
  */
 class db_deleter_by_id_t
 {
-    enum
-    {
-        // There is a trade-off here between sending as few DELETE SQL as
-        // possible and keeping the size of the deletable vector managable.
-        Max_entries = 1000000
-    };
+    /**
+     * There is a trade-off here between sending as few DELETE SQL as
+     * possible and keeping the size of the deletable vector managable.
+     */
+    static constexpr std::size_t MAX_ENTRIES = 1000000;
 
 public:
     bool has_data() const noexcept { return !m_deletables.empty(); }
@@ -85,9 +87,9 @@ public:
     void add(osmid_t osm_id) { m_deletables.push_back(osm_id); }
 
     void delete_rows(std::string const &table, std::string const &column,
-                     pg_conn_t *conn);
+                     pg_conn_t const &db_connection);
 
-    bool is_full() const noexcept { return m_deletables.size() > Max_entries; }
+    bool is_full() const noexcept { return m_deletables.size() > MAX_ENTRIES; }
 
 private:
     /// Vector with object to delete before copying
@@ -99,12 +101,11 @@ private:
  */
 class db_deleter_by_type_and_id_t
 {
-    enum
-    {
-        // There is a trade-off here between sending as few DELETE SQL as
-        // possible and keeping the size of the deletable vector managable.
-        Max_entries = 1000000
-    };
+    /**
+     * There is a trade-off here between sending as few DELETE SQL as
+     * possible and keeping the size of the deletable vector managable.
+     */
+    static constexpr std::size_t MAX_ENTRIES = 1000000;
 
     struct item_t
     {
@@ -126,9 +127,9 @@ public:
     }
 
     void delete_rows(std::string const &table, std::string const &column,
-                     pg_conn_t *conn);
+                     pg_conn_t const &db_connection);
 
-    bool is_full() const noexcept { return m_deletables.size() > Max_entries; }
+    bool is_full() const noexcept { return m_deletables.size() > MAX_ENTRIES; }
 
 private:
     /// Vector with object to delete before copying
@@ -136,60 +137,40 @@ private:
     bool m_has_type = false;
 };
 
-/**
- * A command for the copy thread to execute.
- */
-class db_cmd_t
+struct db_cmd_copy_t
 {
-public:
-    enum cmd_t
-    {
-        Cmd_copy, ///< Copy buffer content into given target.
-        Cmd_sync, ///< Synchronize with parent.
-        Cmd_finish
-    };
+    /**
+     * Size of a single buffer with COPY data for Postgresql.
+     * This is a trade-off between memory usage and sending large chunks
+     * to speed up processing. Currently a one-size fits all value.
+     * Needs more testing and individual values per queue.
+     */
+    static constexpr std::size_t MAX_BUF_SIZE = 10UL * 1024UL * 1024UL;
 
-    virtual ~db_cmd_t() = default;
-
-    cmd_t type;
-
-protected:
-    explicit db_cmd_t(cmd_t t) : type(t) {}
-};
-
-struct db_cmd_copy_t : public db_cmd_t
-{
-    enum
-    {
-        /** Size of a single buffer with COPY data for Postgresql.
-         *  This is a trade-off between memory usage and sending large chunks
-         *  to speed up processing. Currently a one-size fits all value.
-         *  Needs more testing and individual values per queue.
-         */
-        Max_buf_size = 10 * 1024 * 1024,
-        /** Maximum length of the queue with COPY data.
-         *  In the usual case, PostgreSQL should be faster processing the
-         *  data than it can be produced and there should only be one element
-         *  in the queue. If PostgreSQL is slower, then the queue will always
-         *  be full and it is better to keep the queue smaller to reduce memory
-         *  usage. Current value is just assumed to be a reasonable trade off.
-         */
-        Max_buffers = 10
-    };
+    /**
+     * Maximum length of the queue with COPY data.
+     * In the usual case, PostgreSQL should be faster processing the
+     * data than it can be produced and there should only be one element
+     * in the queue. If PostgreSQL is slower, then the queue will always
+     * be full and it is better to keep the queue smaller to reduce memory
+     * usage. Current value is just assumed to be a reasonable trade off.
+     */
+    static constexpr std::size_t MAX_BUFFERS = 10;
 
     /// Name of the target table for the copy operation
     std::shared_ptr<db_target_descr_t> target;
     /// actual copy buffer
     std::string buffer;
 
-    virtual bool has_deletables() const noexcept = 0;
-    virtual void delete_data(pg_conn_t *conn) = 0;
+    db_cmd_copy_t() = default;
 
     explicit db_cmd_copy_t(std::shared_ptr<db_target_descr_t> t)
-    : db_cmd_t(db_cmd_t::Cmd_copy), target(std::move(t))
+    : target(std::move(t))
     {
-        buffer.reserve(Max_buf_size);
+        buffer.reserve(MAX_BUF_SIZE);
     }
+
+    explicit operator bool() const noexcept { return target != nullptr; }
 };
 
 template <typename DELETER>
@@ -201,25 +182,22 @@ public:
     /// Return true if the buffer is filled up.
     bool is_full() const noexcept
     {
-        return (buffer.size() > Max_buf_size - 100) || m_deleter.is_full();
+        return (buffer.size() > MAX_BUF_SIZE - 100) || m_deleter.is_full();
     }
 
-    bool has_deletables() const noexcept override
-    {
-        return m_deleter.has_data();
-    }
+    bool has_deletables() const noexcept { return m_deleter.has_data(); }
 
-    void delete_data(pg_conn_t *conn) override
+    void delete_data(pg_conn_t const &db_connection)
     {
         if (m_deleter.has_data()) {
             m_deleter.delete_rows(
                 qualified_name(target->schema(), target->name()), target->id(),
-                conn);
+                db_connection);
         }
     }
 
     template <typename... ARGS>
-    void add_deletable(ARGS &&... args)
+    void add_deletable(ARGS &&...args)
     {
         m_deleter.add(std::forward<ARGS>(args)...);
     }
@@ -229,19 +207,29 @@ private:
     DELETER m_deleter;
 };
 
-struct db_cmd_sync_t : public db_cmd_t
+struct db_cmd_end_copy_t
+{
+};
+
+struct db_cmd_sync_t
 {
     std::promise<void> barrier;
 
-    explicit db_cmd_sync_t(std::promise<void> &&b)
-    : db_cmd_t(db_cmd_t::Cmd_sync), barrier(std::move(b))
-    {}
+    explicit db_cmd_sync_t(std::promise<void> &&b) : barrier(std::move(b)) {}
 };
 
-struct db_cmd_finish_t : public db_cmd_t
+struct db_cmd_finish_t
 {
-    db_cmd_finish_t() : db_cmd_t(db_cmd_t::Cmd_finish) {}
 };
+
+/**
+ * This type implements the commands that can be sent through the worker
+ * queue to the worker thread.
+ */
+using db_cmd_t =
+    std::variant<db_cmd_copy_delete_t<db_deleter_by_id_t>,
+                 db_cmd_copy_delete_t<db_deleter_by_type_and_id_t>,
+                 db_cmd_end_copy_t, db_cmd_sync_t, db_cmd_finish_t>;
 
 /**
  * The manager for the worker thread that streams copy data into the database.
@@ -249,7 +237,7 @@ struct db_cmd_finish_t : public db_cmd_t
 class db_copy_thread_t
 {
 public:
-    explicit db_copy_thread_t(std::string const &conninfo);
+    explicit db_copy_thread_t(connection_params_t const &connection_params);
 
     db_copy_thread_t(db_copy_thread_t const &) = delete;
     db_copy_thread_t &operator=(db_copy_thread_t const &) = delete;
@@ -259,14 +247,13 @@ public:
 
     ~db_copy_thread_t();
 
-    /**
-     * Add another command for the worker.
-     */
-    void add_buffer(std::unique_ptr<db_cmd_t> &&buffer);
+    /// Add a command to the worker queue.
+    void send_command(db_cmd_t &&buffer);
 
-    /**
-     * Send sync command and wait for the notification.
-     */
+    /// Close COPY if one is open.
+    void end_copy();
+
+    /// Send sync command and wait for it to finish.
     void sync_and_wait();
 
     /**
@@ -283,25 +270,33 @@ private:
         std::mutex queue_mutex;
         std::condition_variable queue_cond;
         std::condition_variable queue_full_cond;
-        std::deque<std::unique_ptr<db_cmd_t>> worker_queue;
+        std::deque<db_cmd_t> worker_queue;
     };
 
     // This is the class that actually instantiated and run in the thread.
     class thread_t
     {
     public:
-        thread_t(std::string conninfo, shared *shared);
+        thread_t(pg_conn_t &&db_connection, shared *shared);
 
         void operator()();
 
     private:
-        void write_to_db(db_cmd_copy_t *buffer);
+        template <typename DELETER>
+        bool execute(db_cmd_copy_delete_t<DELETER> &cmd);
+
+        bool execute(db_cmd_end_copy_t &);
+
+        bool execute(db_cmd_sync_t &cmd);
+
+        static bool execute(db_cmd_finish_t &) { return true; }
+
         void start_copy(std::shared_ptr<db_target_descr_t> const &target);
         void finish_copy();
         void delete_rows(db_cmd_copy_t *buffer);
 
-        std::string m_conninfo;
-        std::unique_ptr<pg_conn_t> m_conn;
+        connection_params_t m_connection_params;
+        pg_conn_t m_db_connection;
 
         // Target for copy operation currently ongoing.
         std::shared_ptr<db_target_descr_t> m_inflight;

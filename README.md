@@ -9,25 +9,29 @@ Nominatim, or general analysis.
 See the [documentation](https://osm2pgsql.org/doc/) for instructions on how
 to install and run osm2pgsql.
 
-[![Github Actions Build Status](https://github.com/openstreetmap/osm2pgsql/workflows/CI/badge.svg?branch=master)](https://github.com/openstreetmap/osm2pgsql/actions)
+[![Github Actions Build Status](https://github.com/osm2pgsql-dev/osm2pgsql/workflows/CI/badge.svg)](https://github.com/osm2pgsql-dev/osm2pgsql/actions)
 [![Packaging Status](https://repology.org/badge/tiny-repos/osm2pgsql.svg)](https://repology.org/project/osm2pgsql/versions)
 
 ## Features
 
-* Converts OSM files to a PostgreSQL DB
-* Conversion of tags to columns is configurable in the style file
-* Able to read .gz, .bz2, .pbf and .o5m files directly
-* Can apply diffs to keep the database up to date
-* Support the choice of output projection
-* Configurable table names
-* Support for hstore field type to store the complete set of tags in one database
-  field if desired
+* freely configurable table layout and content using the LUA scripting language
+* support for building geometries in simple feature format and for generalization
+* read OSM data from OSM, PBF and O5M formats
+* update the database from OSM change files and replication diffs
+* usable for importing a small geographic area on a tiny laptop up to
+  importing the whole world on a large server machine
+* runs on Linux, Windows and MacOS
+* [and more](https://osm2pgsql.org/about/features/)
 
 ## Installing
 
-Most Linux distributions include osm2pgsql. It is available on macOS with
-[Homebrew](https://brew.sh/) and Windows builds are also available. See
-https://osm2pgsql.org/doc/install.html for details.
+* __Linux__: most distributions include osm2pgsql. Debian always offers
+  the latest version via backports.
+* __macOS__: osm2pgsql is available through [Homebrew](https://brew.sh/)
+* __Windows__: use our [binary builds](https://osm2pgsql.org/download/windows/)
+
+For detailed instructions, visit
+the [Installation page](https://osm2pgsql.org/doc/install.html).
 
 ## Building
 
@@ -35,46 +39,45 @@ The latest source code is available in the osm2pgsql git repository on GitHub
 and can be downloaded as follows:
 
 ```sh
-git clone https://github.com/openstreetmap/osm2pgsql.git
+git clone https://github.com/osm2pgsql-dev/osm2pgsql.git
 ```
 
-Osm2pgsql uses the cross-platform [CMake build system](https://cmake.org/)
+osm2pgsql uses the cross-platform [CMake build system](https://cmake.org/)
 to configure and build itself.
 
 Required libraries are
 
+* [CLI11](https://github.com/CLIUtils/CLI11)
 * [expat](https://libexpat.github.io/)
 * [proj](https://proj.org/)
 * [bzip2](http://www.bzip.org/)
 * [zlib](https://www.zlib.net/)
-* [Boost libraries](https://www.boost.org/), including geometry, system and
-  filesystem
+* [Boost libraries](https://www.boost.org/) (for boost geometry)
 * [nlohmann/json](https://json.nlohmann.me/)
-* [OpenCV](https://opencv.org/) (Optional, for generalization only)
-* [potrace](https://potrace.sourceforge.net/) (Optional, for generalization only)
-* [PostgreSQL](https://www.postgresql.org/) client libraries
-* [Lua](https://www.lua.org/) (Optional, used for Lua tag transforms
-  and the flex output)
+* [PostgreSQL](https://www.postgresql.org/) client library
+* [Lua](https://www.lua.org/)
+* [OpenCV](https://opencv.org/) (optional, for generalization only)
+* [potrace](https://potrace.sourceforge.net/) (optional, for generalization only)
 * [Python](https://python.org/) (only for running tests)
 * [Psycopg](https://www.psycopg.org/) (only for running tests)
 
 The following libraries are included in the `contrib` directory. You can build
-with other versions of those libraries (set the `EXTERNAL_*libname*` option to
-`ON`) but make sure you are using a compatible version:
+with other versions of those libraries (set the `EXTERNAL_*libname*` CMake
+option to `ON`) but make sure you are using a compatible version:
 
 * [fmt](https://fmt.dev/) (>= 7.1.3)
 * [libosmium](https://osmcode.org/libosmium/) (>= 2.17.0)
 * [protozero](https://github.com/mapbox/protozero) (>= 1.6.3)
 
 It also requires access to a database server running
-[PostgreSQL](https://www.postgresql.org/) 9.6+ and
-[PostGIS](https://www.postgis.net/) 2.2+.
+[PostgreSQL](https://www.postgresql.org/) (version 12+ works, 14+ strongly
+recommended) and [PostGIS](https://www.postgis.net/) (version 3.0+).
 
 Make sure you have installed the development packages for the libraries
 mentioned in the requirements section and a C++ compiler which supports C++17.
-We officially support gcc >= 7.0 and clang >= 8.
+We officially support gcc >= 10.0 and clang >= 13.
 
-To rebuild the included man page you'll need the [pandoc](https://pandoc.org/)
+To rebuild the included man page you need the [pandoc](https://pandoc.org/)
 tool.
 
 First install the dependencies.
@@ -82,8 +85,8 @@ First install the dependencies.
 On a Debian or Ubuntu system, this can be done with:
 
 ```sh
-sudo apt-get install make cmake g++ libboost-dev libboost-system-dev \
-  libboost-filesystem-dev libexpat1-dev zlib1g-dev libpotrace-dev \
+sudo apt-get install make cmake g++ libboost-dev \
+  libexpat1-dev zlib1g-dev libpotrace-dev \
   libopencv-dev libbz2-dev libpq-dev libproj-dev lua5.3 liblua5.3-dev \
   pandoc nlohmann-json3-dev pyosmium
 ```
@@ -91,9 +94,10 @@ sudo apt-get install make cmake g++ libboost-dev libboost-system-dev \
 On a Fedora system, use
 
 ```sh
-sudo dnf install cmake make gcc-c++ boost-devel expat-devel zlib-devel \
-  potrace-devel opencv-devel json-devel python3-osmium \
-  bzip2-devel postgresql-devel proj-devel proj-epsg lua-devel pandoc
+sudo dnf install cmake make gcc-c++ libtool boost-devel bzip2-devel \
+  expat-devel fmt-devel json-devel libpq-devel lua-devel zlib-devel \
+  potrace-devel opencv-devel python3-osmium \
+  postgresql-devel proj-devel proj-epsg pandoc
 ```
 
 On RedHat / CentOS first run `sudo yum install epel-release` then install
@@ -115,8 +119,9 @@ pkg install devel/cmake devel/boost-libs textproc/expat2 \
 On Alpine, use
 
 ```sh
-apk --update-cache add cmake make g++ boost-dev expat-dev \
-  bzip2-dev zlib-dev libpq proj-dev lua5.3-dev postgresql-dev
+apk --update-cache add cmake make g++ nlohmann-json \
+  postgresql-dev boost-dev expat-dev bzip2-dev zlib-dev \
+  libpq proj-dev lua5.3-dev luajit-dev
 ```
 
 Once dependencies are installed, use CMake to build the Makefiles in a separate
@@ -149,14 +154,8 @@ The compiled files can be installed with
 sudo make install
 ```
 
-To install the experimental `osm2pgsql-gen` binary use
-
-```sh
-sudo make install-gen
-```
-
-By default, the Release build with debug info is created and no tests are
-compiled. You can change that behavior by using additional options like
+By default, a Release build with debug info is created and tests are
+disabled. You can change that behavior by using additional options like
 following:
 
 ```sh
@@ -168,24 +167,13 @@ Note that `Debug` builds will be much slower than release build. For production
 
 ### Using the PROJ library
 
-Osm2pgsql has builtin support for the Latlong (WGS84, EPSG:4326) and the
-WebMercator (EPSG:3857) projection. If you need other projections you have to
-compile with the PROJ library.
+osm2pgsql has builtin support for the Latlong (WGS84, EPSG:4326) and the
+WebMercator (EPSG:3857) projection. Other projections are supported through
+the [Proj library](https://proj.org/). Support will be automatically compiled
+in, when CMake can find the library in the system. Set the CMake
+option `WITH_PROJ` to `OFF` to disable use of that library.
 
-Both the older API (PROJ version 4) and the newer API (PROJ version 6.1 and
-above) are supported. Usually the CMake configuration will find a suitable
-version and use it automatically, but you can set the `USE_PROJ_LIB` CMake
-cache variable to choose between the following behaviours:
-
-* `4`: Look for PROJ library with API version 4. If it is not found, stop with
-  error.
-* `6`: Look for PROJ library with API version 6. If it is not found, stop with
-  error.
-* `off`: Build without PROJ library.
-* `auto`: Choose API 4 if available, otherwise API 6. If both are not available
-  build without PROJ library. (This is the default.)
-
-## Using LuaJIT
+### Using LuaJIT
 
 To speed up Lua tag transformations, [LuaJIT](https://luajit.org/) can be
 optionally enabled on supported platforms. This can speed up processing
@@ -232,6 +220,12 @@ This program is distributed in the hope that it will be useful,
 but WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 GNU General Public License for more details.
+
+## Maintainers
+
+The current maintainers of osm2pgsql are [Sarah Hoffmann](https://github.com/lonvia/),
+[Paul Norman](https://github.com/pnorman/) and
+[Jochen Topf](https://github.com/joto).
 
 ## Contributing
 

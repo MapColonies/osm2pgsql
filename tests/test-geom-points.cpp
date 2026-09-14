@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -42,6 +42,20 @@ TEST_CASE("geom::point_t from location", "[NoDB]")
     REQUIRE(p == geom::point_t{3.141, 2.718});
 }
 
+TEST_CASE("geom::point_t from location with create_point", "[NoDB]")
+{
+    osmium::Location const location{1.1, 2.2};
+
+    geom::geometry_t geom;
+    geom::create_point(&geom, location);
+    REQUIRE(geom.is_point());
+
+    auto const &p = geom.get<geom::point_t>();
+    REQUIRE(p.x() == Approx(1.1));
+    REQUIRE(p.y() == Approx(2.2));
+    REQUIRE(p == geom::point_t{1.1, 2.2});
+}
+
 TEST_CASE("create_point from OSM data", "[NoDB]")
 {
     test_buffer_t buffer;
@@ -51,10 +65,13 @@ TEST_CASE("create_point from OSM data", "[NoDB]")
 
     REQUIRE(geom.is_point());
     REQUIRE(geometry_type(geom) == "POINT");
+    REQUIRE(geom.n_points() == 1);
     REQUIRE(dimension(geom) == 0);
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(0.0));
+    REQUIRE(spherical_area(geom) == Approx(0.0));
     REQUIRE(length(geom) == Approx(0.0));
+    REQUIRE(spherical_length(geom) == Approx(0.0));
     REQUIRE(centroid(geom) == geom::geometry_t{geom::point_t{1.1, 2.2}});
     REQUIRE(geometry_n(geom, 1) == geom);
     REQUIRE(reverse(geom) == geom);

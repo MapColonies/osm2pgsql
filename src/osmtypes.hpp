@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -188,7 +188,7 @@ public:
 
     /// Add tag to list without checking for duplicates
     template <typename T>
-    void add_tag(char const *key, T&& value)
+    void add_tag(char const *key, T &&value)
     {
         m_tags.emplace_back(key, std::forward<T>(value));
     }
@@ -237,23 +237,6 @@ private:
 
     std::vector<tag_t> m_tags;
 }; // class taglist_t
-
-struct idlist_t : public std::vector<osmid_t>
-{
-    // Get all constructors from std::vector
-    using vector<osmid_t>::vector;
-
-    // Even though we got all constructors from std::vector we need this on
-    // some compilers/libraries for some reason.
-    idlist_t() = default;
-
-    explicit idlist_t(osmium::NodeRefList const &list)
-    {
-        for (auto const &n : list) {
-            push_back(n.ref());
-        }
-    }
-};
 
 using rolelist_t = std::vector<char const *>;
 

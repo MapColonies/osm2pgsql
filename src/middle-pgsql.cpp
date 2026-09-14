@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -15,7 +15,6 @@
  * emit the final geometry-enabled output formats
 */
 
-#include <array>
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -33,6 +32,7 @@
 #include <nlohmann/json.hpp>
 
 #include "format.hpp"
+#include "idlist.hpp"
 #include "json-writer.hpp"
 #include "logging.hpp"
 #include "middle-pgsql.hpp"
@@ -41,22 +41,13 @@
 #include "options.hpp"
 #include "osmtypes.hpp"
 #include "pgsql-helper.hpp"
+#include "template.hpp"
 #include "util.hpp"
 
-static bool check_bucket_index(pg_conn_t const *db_connection,
-                               std::string const &prefix)
-{
-    auto const res =
-        db_connection->exec("SELECT relname FROM pg_class"
-                            " WHERE relkind='i'"
-                            " AND relname = '{}_ways_nodes_bucket_idx'",
-                            prefix);
-    return res.num_tuples() > 0;
-}
+namespace {
 
-static void send_id_list(pg_conn_t const &db_connection,
-                         std::string const &table,
-                         osmium::index::IdSetSmall<osmid_t> const &ids)
+void send_id_list(pg_conn_t const &db_connection, std::string const &table,
+                  idlist_t const &ids)
 {
     std::string data;
     for (auto const id : ids) {
@@ -69,113 +60,56 @@ static void send_id_list(pg_conn_t const &db_connection,
     db_connection.copy_end(table);
 }
 
-static void load_id_list(pg_conn_t const &db_connection,
-                         std::string const &table,
-                         osmium::index::IdSetSmall<osmid_t> *ids)
+void load_id_list(pg_conn_t const &db_connection, std::string const &table,
+                  idlist_t *ids)
 {
     auto const res = db_connection.exec(
         fmt::format("SELECT DISTINCT id FROM {} ORDER BY id", table));
     for (int n = 0; n < res.num_tuples(); ++n) {
-        ids->set(osmium::string_to_object_id(res.get_value(n, 0)));
+        ids->push_back(osmium::string_to_object_id(res.get_value(n, 0)));
     }
 }
 
-static std::string build_sql(options_t const &options, std::string const &templ)
+} // anonymous namespace
+
+middle_pgsql_t::table_desc_t::table_desc_t(options_t const &options,
+                                           std::string_view name)
+: m_copy_target(std::make_shared<db_target_descr_t>(
+      options.middle_dbschema, fmt::format("{}_{}", options.prefix, name),
+      "id"))
 {
-    std::string const using_tablespace{options.tblsslim_index.empty()
-                                           ? ""
-                                           : "USING INDEX TABLESPACE " +
-                                                 options.tblsslim_index};
-
-    std::string const schema = "\"" + options.middle_dbschema + "\".";
-
-    return fmt::format(
-        fmt::runtime(templ), fmt::arg("prefix", options.prefix),
-        fmt::arg("schema", schema),
-        fmt::arg("unlogged", options.droptemp ? "UNLOGGED" : ""),
-        fmt::arg("using_tablespace", using_tablespace),
-        fmt::arg("data_tablespace", tablespace_clause(options.tblsslim_data)),
-        fmt::arg("index_tablespace", tablespace_clause(options.tblsslim_index)),
-        fmt::arg("way_node_index_id_shift", options.way_node_index_id_shift),
-        fmt::arg("attribute_columns_definition",
-                 options.extra_attributes ? " created timestamp with time zone,"
-                                            " version int4,"
-                                            " changeset_id int4,"
-                                            " user_id int4,"
-                                          : ""),
-        fmt::arg("attribute_columns_use",
-                 options.extra_attributes
-                     ? ", EXTRACT(EPOCH FROM created) AS created, version, "
-                       "changeset_id, user_id, u.name"
-                     : ""),
-        fmt::arg("users_table_access",
-                 options.extra_attributes
-                     ? "LEFT JOIN " + schema + '"' + options.prefix +
-                           "_users\" u ON o.user_id = u.id"
-                     : ""));
 }
 
-static std::vector<std::string>
-build_sql(options_t const &options, std::vector<std::string> const &templs)
+std::string middle_pgsql_t::render_template(std::string_view templ) const
 {
-    std::vector<std::string> out;
-    out.reserve(templs.size());
-
-    for (auto const &templ : templs) {
-        out.push_back(build_sql(options, templ));
-    }
-
-    return out;
+    template_t sql_template{templ};
+    sql_template.set_params(m_params);
+    return sql_template.render();
 }
 
-middle_pgsql_t::table_desc::table_desc(options_t const &options,
-                                       table_sql const &ts)
-: m_create_table(build_sql(options, ts.create_table)),
-  m_prepare_queries(build_sql(options, ts.prepare_queries)),
-  m_copy_target(std::make_shared<db_target_descr_t>(
-      options.middle_dbschema, build_sql(options, ts.name), "id"))
+void middle_pgsql_t::dbexec(std::string_view templ) const
 {
-    if (options.with_forward_dependencies) {
-        m_create_fw_dep_indexes = build_sql(options, ts.create_fw_dep_indexes);
-    }
+    m_db_connection.exec(render_template(templ));
 }
 
-void middle_query_pgsql_t::exec_sql(std::string const &sql_cmd) const
+void middle_query_pgsql_t::prepare(std::string const &stmt,
+                                   std::string const &sql_cmd) const
 {
-    m_sql_conn.exec(sql_cmd);
+    m_db_connection.prepare(stmt, fmt::runtime(sql_cmd));
 }
 
-void middle_pgsql_t::table_desc::drop_table(
+void middle_pgsql_t::table_desc_t::drop_table(
     pg_conn_t const &db_connection) const
 {
     util::timer_t timer;
 
     log_info("Dropping table '{}'", name());
-
-    auto const qual_name = qualified_name(schema(), name());
-    db_connection.exec("DROP TABLE IF EXISTS {}", qual_name);
-
+    drop_table_if_exists(db_connection, schema(), name());
     log_info("Table '{}' dropped in {}", name(),
              util::human_readable_duration(timer.stop()));
 }
 
-void middle_pgsql_t::table_desc::build_index(std::string const &conninfo) const
-{
-    if (m_create_fw_dep_indexes.empty()) {
-        return;
-    }
-
-    // Use a temporary connection here because we might run in a separate
-    // thread context.
-    pg_conn_t const db_connection{conninfo};
-
-    log_info("Building index on table '{}'", name());
-    for (auto const &query : m_create_fw_dep_indexes) {
-        db_connection.exec(query);
-    }
-}
-
-void middle_pgsql_t::table_desc::init_max_id(pg_conn_t const &db_connection)
+void middle_pgsql_t::table_desc_t::init_max_id(pg_conn_t const &db_connection)
 {
     auto const qual_name = qualified_name(schema(), name());
     auto const res = db_connection.exec("SELECT max(id) FROM {}", qual_name);
@@ -187,133 +121,7 @@ void middle_pgsql_t::table_desc::init_max_id(pg_conn_t const &db_connection)
     m_max_id = osmium::string_to_object_id(res.get_value(0, 0));
 }
 
-/**
- * Decode item in an array literal from PostgreSQL to the next delimiter.
- *
- * \param src Pointer to the text with the array literal.
- * \param dst The decoded item is written to this string. The string is
- *            cleared before use.
- * \returns Pointer to the delimiter found.
- * \throws runtime_error If the input string ends before the delimiter is found.
- */
-static char const *decode_to_delimiter(char const *src, std::string *dst)
-{
-    assert(src);
-    dst->clear();
-
-    bool const quoted = (*src == '"');
-    if (quoted) {
-        ++src;
-    }
-
-    while (quoted ? (*src != '"') : (*src != ',' && *src != '}')) {
-        if (*src == '\0') {
-            throw std::runtime_error{
-                "Parsing array literal from database failed."};
-        }
-        if (*src == '\\') {
-            switch (src[1]) {
-            case 'n':
-                dst->append(1, '\n');
-                break;
-            case 't':
-                dst->append(1, '\t');
-                break;
-            default:
-                dst->append(1, src[1]);
-                break;
-            }
-            src += 2;
-        } else {
-            dst->append(1, *src++);
-        }
-    }
-
-    if (quoted) {
-        ++src;
-    }
-
-    return src;
-}
-
 namespace {
-
-/**
- * Go through tags returned from a version 1 middle table, get the attributes
- * from the "osm_*" tags and add them to the builder.
- */
-template <typename T>
-void pgsql_get_attr_from_tags(char const *string, T *builder)
-{
-    if (*string++ != '{') {
-        return;
-    }
-
-    std::string key;
-    std::string val;
-    std::string user;
-    while (*string != '}') {
-        string = decode_to_delimiter(string, &key);
-        // String points to the comma */
-        ++string;
-        string = decode_to_delimiter(string, &val);
-
-        if (key == "osm_version") {
-            builder->set_version(val.c_str());
-        } else if (key == "osm_timestamp") {
-            builder->set_timestamp(osmium::Timestamp{val});
-        } else if (key == "osm_changeset") {
-            builder->set_changeset(val.c_str());
-        } else if (key == "osm_uid") {
-            builder->set_uid(val.c_str());
-        } else if (key == "osm_user") {
-            user = val;
-        }
-
-        // String points to the comma or closing '}' */
-        if (*string == ',') {
-            ++string;
-        }
-    }
-
-    // Must be done at the end, because after that call the builder might
-    // become invalid due to buffer resizing.
-    builder->set_user(user);
-}
-
-/**
- * Go through tags returned from a version 1 middle table, get all tags except
- * the pseudo-tags containing attributes and add them to the builder.
- */
-template <typename T>
-void pgsql_parse_tags(char const *string, osmium::memory::Buffer *buffer,
-                      T *obuilder)
-{
-    if (*string++ != '{') {
-        return;
-    }
-
-    osmium::builder::TagListBuilder builder{*buffer, obuilder};
-
-    std::string key;
-    std::string val;
-    while (*string != '}') {
-        string = decode_to_delimiter(string, &key);
-        // String points to the comma */
-        ++string;
-        string = decode_to_delimiter(string, &val);
-
-        if (key != "osm_version" && key != "osm_timestamp" &&
-            key != "osm_changeset" && key != "osm_uid" && key != "osm_user") {
-            builder.add_tag(key, val);
-        }
-
-        // String points to the comma or closing '}' */
-        if (*string == ',') {
-            ++string;
-        }
-    }
-}
 
 /**
  * Parse JSON-encoded tags from a version 2 middle table and add them to the
@@ -342,10 +150,10 @@ void pgsql_parse_json_tags(char const *string, osmium::memory::Buffer *buffer,
 /**
  * Helper class for parsing relation members encoded in JSON.
  */
-class member_list_json_builder
+class member_list_json_builder_t
 {
 public:
-    explicit member_list_json_builder(
+    explicit member_list_json_builder_t(
         osmium::builder::RelationMemberListBuilder *builder)
     : m_builder(builder)
     {}
@@ -362,7 +170,7 @@ public:
     }
 
     static bool number_float(nlohmann::json::number_float_t /*val*/,
-                             const nlohmann::json::string_t & /*s*/)
+                             nlohmann::json::string_t const & /*s*/)
     {
         return true;
     }
@@ -419,25 +227,25 @@ public:
     static bool end_array() { return true; }
 
     static bool parse_error(std::size_t /*position*/,
-                            const std::string & /*last_token*/,
-                            const nlohmann::json::exception &ex)
+                            std::string const & /*last_token*/,
+                            nlohmann::json::exception const &ex)
     {
         throw ex;
     }
 
 private:
-    osmium::builder::RelationMemberListBuilder *m_builder;
     std::string m_role;
+    osmium::builder::RelationMemberListBuilder *m_builder;
     osmium::object_id_type m_ref = 0;
     osmium::item_type m_type = osmium::item_type::undefined;
-    enum class next_val
+    enum class next_val : std::uint8_t
     {
         none,
         type,
         ref,
         role
     } m_next_val = next_val::none;
-};
+}; // class member_list_json_builder_t
 
 template <typename T>
 void pgsql_parse_json_members(char const *string,
@@ -448,32 +256,8 @@ void pgsql_parse_json_members(char const *string,
     }
 
     osmium::builder::RelationMemberListBuilder builder{*buffer, obuilder};
-    member_list_json_builder parser{&builder};
+    member_list_json_builder_t parser{&builder};
     nlohmann::json::sax_parse(string, &parser);
-}
-
-void pgsql_parse_members(char const *string, osmium::memory::Buffer *buffer,
-                         osmium::builder::RelationBuilder *obuilder)
-{
-    if (*string++ != '{') {
-        return;
-    }
-
-    std::string role;
-    osmium::builder::RelationMemberListBuilder builder{*buffer, obuilder};
-
-    while (*string != '}') {
-        char const type = string[0];
-        char *endp = nullptr;
-        osmid_t const id = std::strtoll(string + 1, &endp, 10);
-        // String points to the comma */
-        string = decode_to_delimiter(endp + 1, &role);
-        builder.add_member(osmium::char_to_item_type(type), id, role);
-        // String points to the comma or closing '}' */
-        if (*string == ',') {
-            ++string;
-        }
-    }
 }
 
 void pgsql_parse_nodes(char const *string, osmium::memory::Buffer *buffer,
@@ -514,9 +298,7 @@ void set_attributes_on_builder(T *builder, pg_result_t const &result, int num,
     }
 }
 
-} // anonymous namespace
-
-static void tags_to_json(osmium::TagList const &tags, json_writer_t *writer)
+void tags_to_json(osmium::TagList const &tags, json_writer_t *writer)
 {
     writer->start_object();
 
@@ -529,8 +311,8 @@ static void tags_to_json(osmium::TagList const &tags, json_writer_t *writer)
     writer->end_object();
 }
 
-static void members_to_json(osmium::RelationMemberList const &members,
-                            json_writer_t *writer)
+void members_to_json(osmium::RelationMemberList const &members,
+                     json_writer_t *writer)
 {
     writer->start_array();
 
@@ -565,30 +347,7 @@ static void members_to_json(osmium::RelationMemberList const &members,
     writer->end_array();
 }
 
-void middle_pgsql_t::buffer_store_tags(osmium::OSMObject const &obj, bool attrs)
-{
-    if (obj.tags().empty() && !attrs) {
-        m_db_copy.add_null_column();
-    } else {
-        m_db_copy.new_array();
-
-        for (auto const &it : obj.tags()) {
-            m_db_copy.add_array_elem(it.key());
-            m_db_copy.add_array_elem(it.value());
-        }
-
-        if (attrs) {
-            taglist_t extra;
-            extra.add_attributes(obj);
-            for (auto const &it : extra) {
-                m_db_copy.add_array_elem(it.key);
-                m_db_copy.add_array_elem(it.value);
-            }
-        }
-
-        m_db_copy.finish_array();
-    }
-}
+} // anonymous namespace
 
 void middle_pgsql_t::copy_attributes(osmium::OSMObject const &obj)
 {
@@ -620,17 +379,13 @@ void middle_pgsql_t::copy_attributes(osmium::OSMObject const &obj)
 
 void middle_pgsql_t::copy_tags(osmium::OSMObject const &obj)
 {
-    if (m_store_options.db_format == 2) {
-        if (obj.tags().empty()) {
-            m_db_copy.add_null_column();
-            return;
-        }
-        json_writer_t writer;
-        tags_to_json(obj.tags(), &writer);
-        m_db_copy.add_column(writer.json());
+    if (obj.tags().empty()) {
+        m_db_copy.add_null_column();
         return;
     }
-    buffer_store_tags(obj, m_store_options.with_attributes);
+    json_writer_t writer;
+    tags_to_json(obj.tags(), &writer);
+    m_db_copy.add_column(writer.json());
 }
 
 std::size_t middle_query_pgsql_t::get_way_node_locations_db(
@@ -657,7 +412,7 @@ std::size_t middle_query_pgsql_t::get_way_node_locations_db(
 
     // get any remaining nodes from the DB
     // Nodes must have been written back at this point.
-    auto const res = m_sql_conn.exec_prepared("get_node_list", id_list());
+    auto const res = m_db_connection.exec_prepared("get_node_list", id_list());
     std::unordered_map<osmid_t, osmium::Location> locs;
     for (int i = 0; i < res.num_tuples(); ++i) {
         locs.emplace(osmium::string_to_object_id(res.get_value(i, 0)),
@@ -691,7 +446,8 @@ void middle_pgsql_t::node(osmium::Node const &node)
     }
 }
 
-void middle_pgsql_t::way(osmium::Way const &way) {
+void middle_pgsql_t::way(osmium::Way const &way)
+{
     assert(m_middle_state == middle_state::way);
 
     if (way.deleted()) {
@@ -704,7 +460,8 @@ void middle_pgsql_t::way(osmium::Way const &way) {
     }
 }
 
-void middle_pgsql_t::relation(osmium::Relation const &relation) {
+void middle_pgsql_t::relation(osmium::Relation const &relation)
+{
     assert(m_middle_state == middle_state::relation);
 
     if (relation.deleted()) {
@@ -737,12 +494,10 @@ void middle_pgsql_t::node_set(osmium::Node const &node)
 
     m_db_copy.add_columns(node.id(), node.location().y(), node.location().x());
 
-    if (m_store_options.db_format == 2) {
-        if (m_store_options.with_attributes) {
-            copy_attributes(node);
-        }
-        copy_tags(node);
+    if (m_store_options.with_attributes) {
+        copy_attributes(node);
     }
+    copy_tags(node);
 
     m_db_copy.finish_line();
 }
@@ -768,7 +523,7 @@ std::size_t middle_query_pgsql_t::get_way_node_locations_flatnodes(
 
 osmium::Location middle_query_pgsql_t::get_node_location_db(osmid_t id) const
 {
-    auto const res = m_sql_conn.exec_prepared("get_node", id);
+    auto const res = m_db_connection.exec_prepared("get_node_location", id);
     if (res.num_tuples() == 0) {
         return osmium::Location{};
     }
@@ -817,10 +572,9 @@ void middle_pgsql_t::node_delete(osmid_t osm_id)
     }
 }
 
-void middle_pgsql_t::get_node_parents(
-    osmium::index::IdSetSmall<osmid_t> const &changed_nodes,
-    osmium::index::IdSetSmall<osmid_t> *parent_ways,
-    osmium::index::IdSetSmall<osmid_t> *parent_relations) const
+void middle_pgsql_t::get_node_parents(idlist_t const &changed_nodes,
+                                      idlist_t *parent_ways,
+                                      idlist_t *parent_relations) const
 {
     util::timer_t timer;
 
@@ -838,18 +592,14 @@ void middle_pgsql_t::get_node_parents(
 
     queries.emplace_back("ANALYZE osm2pgsql_changed_nodes");
 
-    bool const has_bucket_index =
-        check_bucket_index(&m_db_connection, m_options->prefix);
-
-    if (has_bucket_index) {
-        // The query to get the parent ways of changed nodes is "hidden"
-        // inside a PL/pgSQL function so that the query planner only sees
-        // a single node id that is being queried for. If we ask for all
-        // nodes at the same time the query planner sometimes thinks it is
-        // better to do a full table scan which totally destroys performance.
-        // This is due to the PostgreSQL statistics on ARRAYs being way off.
-        queries.emplace_back(R"(
-CREATE OR REPLACE FUNCTION osm2pgsql_find_changed_ways() RETURNS void AS $$
+    // The query to get the parent ways of changed nodes is "hidden"
+    // inside a PL/pgSQL function so that the query planner only sees
+    // a single node id that is being queried for. If we ask for all
+    // nodes at the same time the query planner sometimes thinks it is
+    // better to do a full table scan which totally destroys performance.
+    // This is due to the PostgreSQL statistics on ARRAYs being way off.
+    queries.emplace_back(R"(
+CREATE OR REPLACE FUNCTION {schema}osm2pgsql_find_changed_ways() RETURNS void AS $$
 DECLARE
   changed_buckets RECORD;
 BEGIN
@@ -867,39 +617,24 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql
 )");
-        queries.emplace_back("SELECT osm2pgsql_find_changed_ways()");
-        queries.emplace_back("DROP FUNCTION osm2pgsql_find_changed_ways()");
-    } else {
-        queries.emplace_back(R"(
-INSERT INTO osm2pgsql_changed_ways
-  SELECT w.id
-    FROM {schema}"{prefix}_ways" w, osm2pgsql_changed_nodes n
-    WHERE w.nodes && ARRAY[n.id]
-        )");
-    }
+    queries.emplace_back("SELECT {schema}osm2pgsql_find_changed_ways()");
+    queries.emplace_back("DROP FUNCTION {schema}osm2pgsql_find_changed_ways()");
 
-    if (m_options->middle_database_format == 1) {
-        queries.emplace_back(R"(
-INSERT INTO osm2pgsql_changed_relations
-  SELECT r.id
-    FROM {schema}"{prefix}_rels" r, osm2pgsql_changed_nodes n
-    WHERE r.parts && ARRAY[n.id]
-      AND r.parts[1:way_off] && ARRAY[n.id]
-        )");
-    } else {
-        queries.emplace_back(R"(
+    queries.emplace_back(R"(
 INSERT INTO osm2pgsql_changed_relations
   SELECT r.id
     FROM {schema}"{prefix}_rels" r, osm2pgsql_changed_nodes c
     WHERE {schema}"{prefix}_member_ids"(r.members, 'N'::char) && ARRAY[c.id];
-        )");
-    }
+    )");
 
     for (auto const &query : queries) {
-        m_db_connection.exec(build_sql(*m_options, query));
+        dbexec(query);
     }
 
-    load_id_list(m_db_connection, "osm2pgsql_changed_ways", parent_ways);
+    if (parent_ways) {
+        load_id_list(m_db_connection, "osm2pgsql_changed_ways", parent_ways);
+    }
+
     load_id_list(m_db_connection, "osm2pgsql_changed_relations",
                  parent_relations);
 
@@ -908,14 +643,21 @@ INSERT INTO osm2pgsql_changed_relations
     timer.stop();
 
     log_debug("Found {} new/changed nodes in input.", changed_nodes.size());
-    log_debug("  Found in {} their {} parent ways and {} parent relations.",
-              std::chrono::duration_cast<std::chrono::seconds>(timer.elapsed()),
-              parent_ways->size(), parent_relations->size());
+
+    auto const elapsed_sec =
+        std::chrono::duration_cast<std::chrono::seconds>(timer.elapsed());
+
+    if (parent_ways) {
+        log_debug("  Found in {} their {} parent ways and {} parent relations.",
+                  elapsed_sec, parent_ways->size(), parent_relations->size());
+    } else {
+        log_debug("  Found in {} their {} parent relations.", elapsed_sec,
+                  parent_relations->size());
+    }
 }
 
-void middle_pgsql_t::get_way_parents(
-    osmium::index::IdSetSmall<osmid_t> const &changed_ways,
-    osmium::index::IdSetSmall<osmid_t> *parent_relations) const
+void middle_pgsql_t::get_way_parents(idlist_t const &changed_ways,
+                                     idlist_t *parent_relations) const
 {
     util::timer_t timer;
 
@@ -931,22 +673,12 @@ void middle_pgsql_t::get_way_parents(
 
     m_db_connection.exec("ANALYZE osm2pgsql_changed_ways");
 
-    if (m_options->middle_database_format == 1) {
-        m_db_connection.exec(build_sql(*m_options, R"(
-INSERT INTO osm2pgsql_changed_relations
-  SELECT DISTINCT r.id
-    FROM {schema}"{prefix}_rels" r, osm2pgsql_changed_ways w
-    WHERE r.parts && ARRAY[w.id]
-      AND r.parts[way_off+1:rel_off] && ARRAY[w.id]
-        )"));
-    } else {
-        m_db_connection.exec(build_sql(*m_options, R"(
+    dbexec(R"(
 INSERT INTO osm2pgsql_changed_relations
   SELECT DISTINCT r.id
     FROM {schema}"{prefix}_rels" r, osm2pgsql_changed_ways c
     WHERE {schema}"{prefix}_member_ids"(r.members, 'W'::char) && ARRAY[c.id];
-        )"));
-    }
+    )");
 
     load_id_list(m_db_connection, "osm2pgsql_changed_relations",
                  parent_relations);
@@ -972,7 +704,7 @@ void middle_pgsql_t::way_set(osmium::Way const &way)
 
     m_db_copy.add_column(way.id());
 
-    if (m_store_options.db_format == 2 && m_store_options.with_attributes) {
+    if (m_store_options.with_attributes) {
         copy_attributes(way);
     }
 
@@ -988,25 +720,34 @@ void middle_pgsql_t::way_set(osmium::Way const &way)
     m_db_copy.finish_line();
 }
 
+namespace {
+
+/**
+ * Build node in buffer from database results.
+ */
+void build_node(osmid_t id, pg_result_t const &res, int res_num, int offset,
+                osmium::memory::Buffer *buffer, bool with_attributes)
+{
+    osmium::builder::NodeBuilder builder{*buffer};
+    builder.set_id(id);
+    builder.set_location(osmium::Location{
+        (int)std::strtol(res.get_value(res_num, offset + 0), nullptr, 10),
+        (int)std::strtol(res.get_value(res_num, offset + 1), nullptr, 10)});
+
+    if (with_attributes) {
+        set_attributes_on_builder(&builder, res, res_num, offset + 3);
+    }
+    pgsql_parse_json_tags(res.get_value(res_num, offset + 2), buffer, &builder);
+}
+
 /**
  * Build way in buffer from database results.
  */
-static void build_way(osmid_t id, pg_result_t const &res, int res_num,
-                      int offset, osmium::memory::Buffer *buffer,
-                      uint8_t db_format, bool with_attributes)
+void build_way(osmid_t id, pg_result_t const &res, int res_num, int offset,
+               osmium::memory::Buffer *buffer, bool with_attributes)
 {
     osmium::builder::WayBuilder builder{*buffer};
     builder.set_id(id);
-
-    if (db_format == 1) {
-        if (with_attributes) {
-            pgsql_get_attr_from_tags(res.get_value(res_num, offset + 1),
-                                     &builder);
-        }
-        pgsql_parse_nodes(res.get_value(res_num, offset + 0), buffer, &builder);
-        pgsql_parse_tags(res.get_value(res_num, offset + 1), buffer, &builder);
-        return;
-    }
 
     if (with_attributes) {
         set_attributes_on_builder(&builder, res, res_num, offset);
@@ -1015,19 +756,54 @@ static void build_way(osmid_t id, pg_result_t const &res, int res_num,
     pgsql_parse_json_tags(res.get_value(res_num, offset + 1), buffer, &builder);
 }
 
+} // anonymous namespace
+
+bool middle_query_pgsql_t::node_get(osmid_t id,
+                                    osmium::memory::Buffer *buffer) const
+{
+    assert(buffer);
+
+    if (m_store_options.nodes) {
+        auto const res = m_db_connection.exec_prepared("get_node", id);
+
+        if (res.num_tuples() == 1) {
+            build_node(id, res, 0, 0, buffer, m_store_options.with_attributes);
+            buffer->commit();
+            return true;
+        }
+    }
+
+    if (m_store_options.use_flat_node_file) {
+        auto const location = get_node_location_flatnodes(id);
+        if (!location.valid()) {
+            return false;
+        }
+
+        {
+            osmium::builder::NodeBuilder builder{*buffer};
+            builder.set_id(id);
+            builder.set_location(location);
+        }
+
+        buffer->commit();
+        return true;
+    }
+
+    return false;
+}
+
 bool middle_query_pgsql_t::way_get(osmid_t id,
                                    osmium::memory::Buffer *buffer) const
 {
     assert(buffer);
 
-    auto const res = m_sql_conn.exec_prepared("get_way", id);
+    auto const res = m_db_connection.exec_prepared("get_way", id);
 
     if (res.num_tuples() != 1) {
         return false;
     }
 
-    build_way(id, res, 0, 0, buffer, m_store_options.db_format,
-              m_store_options.with_attributes);
+    build_way(id, res, 0, 0, buffer, m_store_options.with_attributes);
 
     buffer->commit();
 
@@ -1055,7 +831,7 @@ middle_query_pgsql_t::rel_members_get(osmium::Relation const &rel,
 
         // ...and get those ways from database
         if (!way_ids.empty()) {
-            res = m_sql_conn.exec_prepared("get_way_list", way_ids());
+            res = m_db_connection.exec_prepared("get_way_list", way_ids());
             wayidspg = get_ids_from_result(res);
         }
     }
@@ -1074,7 +850,6 @@ middle_query_pgsql_t::rel_members_get(osmium::Relation const &rel,
             for (int j = 0; j < res.num_tuples(); ++j) {
                 if (member.ref() == wayidspg[static_cast<std::size_t>(j)]) {
                     build_way(member.ref(), res, j, 1, buffer,
-                              m_store_options.db_format,
                               m_store_options.with_attributes);
                     ++members_found;
                     break;
@@ -1098,50 +873,7 @@ void middle_pgsql_t::way_delete(osmid_t osm_id)
     }
 }
 
-void middle_pgsql_t::relation_set_format1(osmium::Relation const &rel)
-{
-    // Sort relation members by their type.
-    std::array<idlist_t, 3> parts;
-
-    for (auto const &m : rel.members()) {
-        parts.at(osmium::item_type_to_nwr_index(m.type())).push_back(m.ref());
-    }
-
-    m_db_copy.new_line(m_tables.relations().copy_target());
-
-    // id, way offset, relation offset
-    m_db_copy.add_columns(rel.id(), parts[0].size(),
-                          parts[0].size() + parts[1].size());
-
-    // parts
-    m_db_copy.new_array();
-    for (auto const &part : parts) {
-        for (auto it : part) {
-            m_db_copy.add_array_elem(it);
-        }
-    }
-    m_db_copy.finish_array();
-
-    // members
-    if (rel.members().empty()) {
-        m_db_copy.add_null_column();
-    } else {
-        m_db_copy.new_array();
-        for (auto const &m : rel.members()) {
-            m_db_copy.add_array_elem(osmium::item_type_to_char(m.type()) +
-                                     std::to_string(m.ref()));
-            m_db_copy.add_array_elem(m.role());
-        }
-        m_db_copy.finish_array();
-    }
-
-    // tags
-    buffer_store_tags(rel, m_options->extra_attributes);
-
-    m_db_copy.finish_line();
-}
-
-void middle_pgsql_t::relation_set_format2(osmium::Relation const &rel)
+void middle_pgsql_t::relation_set(osmium::Relation const &rel)
 {
     m_db_copy.new_line(m_tables.relations().copy_target());
     m_db_copy.add_column(rel.id());
@@ -1159,47 +891,12 @@ void middle_pgsql_t::relation_set_format2(osmium::Relation const &rel)
     m_db_copy.finish_line();
 }
 
-void middle_pgsql_t::relation_set(osmium::Relation const &rel)
-{
-    if (m_store_options.db_format == 2) {
-        return relation_set_format2(rel);
-    }
-    return relation_set_format1(rel);
-}
-
-bool middle_query_pgsql_t::relation_get_format1(
-    osmid_t id, osmium::memory::Buffer *buffer) const
+bool middle_query_pgsql_t::relation_get(osmid_t id,
+                                        osmium::memory::Buffer *buffer) const
 {
     assert(buffer);
 
-    auto const res = m_sql_conn.exec_prepared("get_rel", id);
-    if (res.num_tuples() != 1) {
-        return false;
-    }
-
-    {
-        osmium::builder::RelationBuilder builder{*buffer};
-        builder.set_id(id);
-        if (m_store_options.with_attributes) {
-            pgsql_get_attr_from_tags(res.get_value(0, 1), &builder);
-        }
-
-        pgsql_get_attr_from_tags(res.get_value(0, 1), &builder);
-        pgsql_parse_members(res.get_value(0, 0), buffer, &builder);
-        pgsql_parse_tags(res.get_value(0, 1), buffer, &builder);
-    }
-
-    buffer->commit();
-
-    return true;
-}
-
-bool middle_query_pgsql_t::relation_get_format2(
-    osmid_t id, osmium::memory::Buffer *buffer) const
-{
-    assert(buffer);
-
-    auto const res = m_sql_conn.exec_prepared("get_rel", id);
+    auto const res = m_db_connection.exec_prepared("get_rel", id);
 
     if (res.num_tuples() == 0) {
         return false;
@@ -1219,15 +916,6 @@ bool middle_query_pgsql_t::relation_get_format2(
     buffer->commit();
 
     return true;
-}
-
-bool middle_query_pgsql_t::relation_get(osmid_t id,
-                                        osmium::memory::Buffer *buffer) const
-{
-    if (m_store_options.db_format == 2) {
-        return relation_get_format2(id, buffer);
-    }
-    return relation_get_format1(id, buffer);
 }
 
 void middle_pgsql_t::relation_delete(osmid_t osm_id)
@@ -1252,6 +940,8 @@ void middle_pgsql_t::after_nodes()
         auto const &table = m_tables.nodes();
         analyze_table(m_db_connection, table.schema(), table.name());
     }
+
+    m_cache->log_stats();
 }
 
 void middle_pgsql_t::after_ways()
@@ -1281,8 +971,7 @@ void middle_pgsql_t::after_relations()
         analyze_table(m_db_connection, table.schema(), table.name());
     }
 
-    if (m_store_options.db_format == 2 && m_store_options.with_attributes &&
-        !m_options->droptemp) {
+    if (m_store_options.with_attributes && !m_options->droptemp) {
         if (m_append) {
             update_users_table();
         } else {
@@ -1295,27 +984,17 @@ void middle_pgsql_t::after_relations()
 }
 
 middle_query_pgsql_t::middle_query_pgsql_t(
-    std::string const &conninfo, std::shared_ptr<node_locations_t> cache,
-    std::shared_ptr<node_persistent_cache> persistent_cache,
+    connection_params_t const &connection_params,
+    std::shared_ptr<node_locations_t> cache,
+    std::shared_ptr<node_persistent_cache_t> persistent_cache,
     middle_pgsql_options const &options)
-: m_sql_conn(conninfo), m_cache(std::move(cache)),
+: m_db_connection(connection_params, "middle.query"), m_cache(std::move(cache)),
   m_persistent_cache(std::move(persistent_cache)), m_store_options(options)
 {
     // Disable JIT and parallel workers as they are known to cause
     // problems when accessing the intarrays.
-    m_sql_conn.set_config("jit_above_cost", "-1");
-    m_sql_conn.set_config("max_parallel_workers_per_gather", "0");
-}
-
-static void table_setup(pg_conn_t const &db_connection,
-                        middle_pgsql_t::table_desc const &table)
-{
-    log_debug("Setting up table '{}'", table.name());
-    auto const qual_name = qualified_name(table.schema(), table.name());
-    db_connection.exec("DROP TABLE IF EXISTS {} CASCADE", qual_name);
-    if (!table.m_create_table.empty()) {
-        db_connection.exec(table.m_create_table);
-    }
+    m_db_connection.set_config("jit_above_cost", "-1");
+    m_db_connection.set_config("max_parallel_workers_per_gather", "0");
 }
 
 void middle_pgsql_t::start()
@@ -1340,22 +1019,57 @@ void middle_pgsql_t::start()
         }
         m_tables.ways().init_max_id(m_db_connection);
         m_tables.relations().init_max_id(m_db_connection);
-    } else {
-        if (m_store_options.db_format == 2) {
-            table_setup(m_db_connection, m_users_table);
-        }
-        for (auto const &table : m_tables) {
-            table_setup(m_db_connection, table);
-        }
+        return;
+    }
+
+    if (m_store_options.nodes) {
+        log_debug("Setting up table 'nodes'");
+        dbexec(R"(DROP TABLE IF EXISTS {schema}"{prefix}_nodes" CASCADE)");
+        dbexec("CREATE {unlogged} TABLE {schema}\"{prefix}_nodes\" ("
+               " id int8 PRIMARY KEY {using_tablespace},"
+               " lat int4 NOT NULL,"
+               " lon int4 NOT NULL,"
+               "{attribute_columns_definition}"
+               " tags jsonb"
+               ") {data_tablespace}");
+    }
+
+    log_debug("Setting up table 'ways'");
+    dbexec(R"(DROP TABLE IF EXISTS {schema}"{prefix}_ways" CASCADE)");
+    dbexec("CREATE {unlogged} TABLE {schema}\"{prefix}_ways\" ("
+           " id int8 PRIMARY KEY {using_tablespace},"
+           "{attribute_columns_definition}"
+           " nodes int8[] NOT NULL,"
+           " tags jsonb"
+           ") {data_tablespace}");
+
+    log_debug("Setting up table 'rels'");
+    dbexec(R"(DROP TABLE IF EXISTS {schema}"{prefix}_rels" CASCADE)");
+    dbexec("CREATE {unlogged} TABLE {schema}\"{prefix}_rels\" ("
+           " id int8 PRIMARY KEY {using_tablespace},"
+           "{attribute_columns_definition}"
+           " members jsonb NOT NULL,"
+           " tags jsonb"
+           ") {data_tablespace}");
+
+    if (m_store_options.with_attributes) {
+        log_debug("Setting up table 'users'");
+        dbexec(R"(DROP TABLE IF EXISTS {schema}"{prefix}_users" CASCADE)");
+        dbexec("CREATE TABLE {schema}\"{prefix}_users\" ("
+               " id INT4 PRIMARY KEY {using_tablespace},"
+               " name TEXT NOT NULL"
+               ") {data_tablespace}");
     }
 }
 
 void middle_pgsql_t::write_users_table()
 {
-    log_info("Writing {} entries to table '{}'...", m_users.size(),
-             m_users_table.name());
+    auto const table_name = m_options->prefix + "_users";
+
+    log_info("Writing {} entries to table '{}'...", m_users.size(), table_name);
+
     auto const users_table = std::make_shared<db_target_descr_t>(
-        m_users_table.schema(), m_users_table.name(), "id");
+        m_options->dbschema, table_name, "id");
 
     for (auto const &[id, name] : m_users) {
         m_db_copy.new_line(users_table);
@@ -1366,19 +1080,20 @@ void middle_pgsql_t::write_users_table()
 
     m_users.clear();
 
-    analyze_table(m_db_connection, m_users_table.schema(),
-                  m_users_table.name());
+    analyze_table(m_db_connection, m_options->dbschema, table_name);
 }
 
 void middle_pgsql_t::update_users_table()
 {
-    log_info("Writing {} entries to table '{}'...", m_users.size(),
-             m_users_table.name());
+    auto const table_name = m_options->prefix + "_users";
 
-    m_db_connection.exec("PREPARE insert_user(int8, text) AS"
-                         " INSERT INTO {}\"{}\" (id, name) VALUES ($1, $2)"
-                         " ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id",
-                         m_users_table.schema(), m_users_table.name());
+    log_info("Writing {} entries to table '{}'...", m_users.size(), table_name);
+
+    m_db_connection.prepare(
+        "insert_user",
+        "INSERT INTO {}.\"{}\" (id, name) VALUES ($1::int8, $2::text)"
+        " ON CONFLICT (id) DO UPDATE SET id=EXCLUDED.id",
+        m_options->dbschema, table_name);
 
     for (auto const &[id, name] : m_users) {
         m_db_connection.exec_prepared("insert_user", id, name);
@@ -1386,8 +1101,62 @@ void middle_pgsql_t::update_users_table()
 
     m_users.clear();
 
-    analyze_table(m_db_connection, m_users_table.schema(),
-                  m_users_table.name());
+    analyze_table(m_db_connection, m_options->dbschema, table_name);
+}
+
+void middle_pgsql_t::build_way_node_index()
+{
+    dbexec("CREATE OR REPLACE FUNCTION"
+           "    {schema}\"{prefix}_index_bucket\"(int8[])"
+           "  RETURNS int8[] AS $$"
+           "  SELECT ARRAY(SELECT DISTINCT"
+           "    unnest($1) >> {way_node_index_id_shift})"
+           "$$ LANGUAGE SQL IMMUTABLE");
+
+    auto const create_ways_index =
+        render_template("CREATE INDEX \"{prefix}_ways_nodes_bucket_idx\""
+                        " ON {schema}\"{prefix}_ways\""
+                        " USING GIN ({schema}\"{prefix}_index_bucket\"(nodes))"
+                        " WITH (fastupdate = off) {index_tablespace}");
+
+    log_info("Building index on middle ways table");
+    m_tables.ways().task_set(thread_pool().submit([&, create_ways_index]() {
+        pg_conn_t const db_connection{m_options->connection_params,
+                                      "middle.index.ways"};
+        db_connection.exec(create_ways_index);
+    }));
+}
+
+void middle_pgsql_t::build_relation_member_indexes()
+{
+    dbexec("CREATE OR REPLACE FUNCTION"
+           " {schema}\"{prefix}_member_ids\"(jsonb, char)"
+           " RETURNS int8[] AS $$"
+           "  SELECT array_agg((el->>'ref')::int8)"
+           "   FROM jsonb_array_elements($1) AS el"
+           "    WHERE el->>'type' = $2"
+           "$$ LANGUAGE SQL IMMUTABLE");
+
+    auto const create_rels_index_node_members = render_template(
+        "CREATE INDEX \"{prefix}_rels_node_members_idx\""
+        " ON {schema}\"{prefix}_rels\" USING GIN"
+        " (({schema}\"{prefix}_member_ids\"(members, 'N'::char)))"
+        " WITH (fastupdate = off) {index_tablespace}");
+
+    auto const create_rels_index_way_members = render_template(
+        "CREATE INDEX \"{prefix}_rels_way_members_idx\""
+        " ON {schema}\"{prefix}_rels\" USING GIN"
+        " (({schema}\"{prefix}_member_ids\"(members, 'W'::char)))"
+        " WITH (fastupdate = off) {index_tablespace}");
+
+    log_info("Building indexes on middle rels table");
+    m_tables.relations().task_set(thread_pool().submit(
+        [&, create_rels_index_node_members, create_rels_index_way_members]() {
+            pg_conn_t const db_connection{m_options->connection_params,
+                                          "middle.index.rels"};
+            db_connection.exec(create_rels_index_node_members);
+            db_connection.exec(create_rels_index_way_members);
+        }));
 }
 
 void middle_pgsql_t::stop()
@@ -1400,15 +1169,12 @@ void middle_pgsql_t::stop()
     if (m_options->droptemp) {
         // Dropping the tables is fast, so do it synchronously to guarantee
         // that the space is freed before creating the other indices.
-        for (auto &table : m_tables) {
+        for (auto const &table : m_tables) {
             table.drop_table(m_db_connection);
         }
     } else if (!m_options->append) {
-        // Building the indexes takes time, so do it asynchronously.
-        for (auto &table : m_tables) {
-            table.task_set(thread_pool().submit(
-                [&]() { table.build_index(m_options->conninfo); }));
-        }
+        build_way_node_index();
+        build_relation_member_indexes();
     }
 }
 
@@ -1421,241 +1187,59 @@ void middle_pgsql_t::wait()
     }
 }
 
-static table_sql sql_for_users(middle_pgsql_options const &store_options)
+namespace {
+
+void init_params(params_t *params, options_t const &options)
 {
-    table_sql sql{};
+    std::string const schema = "\"" + options.middle_dbschema + "\".";
 
-    sql.name = "{prefix}_users";
+    params->set("prefix", options.prefix);
+    params->set("schema", schema);
+    params->set("unlogged", options.droptemp ? "UNLOGGED" : "");
+    params->set("data_tablespace", tablespace_clause(options.tblsslim_data));
+    params->set("index_tablespace", tablespace_clause(options.tblsslim_index));
+    params->set("way_node_index_id_shift", 5);
 
-    if (store_options.with_attributes) {
-        sql.create_table = "CREATE TABLE {schema}\"{prefix}_users\" ("
-                           " id INT4 PRIMARY KEY {using_tablespace},"
-                           " name TEXT NOT NULL"
-                           ") {data_tablespace}";
-    }
-
-    return sql;
-}
-
-static table_sql sql_for_nodes_format1(bool create_table)
-{
-    table_sql sql{};
-
-    sql.name = "{prefix}_nodes";
-
-    if (create_table) {
-        sql.create_table =
-            "CREATE {unlogged} TABLE {schema}\"{prefix}_nodes\" ("
-            "  id int8 PRIMARY KEY {using_tablespace},"
-            "  lat int4 NOT NULL,"
-            "  lon int4 NOT NULL"
-            ") {data_tablespace}";
-
-        sql.prepare_queries = {
-            "PREPARE get_node_list(int8[]) AS"
-            "  SELECT id, lon, lat FROM {schema}\"{prefix}_nodes\""
-            "  WHERE id = ANY($1::int8[])",
-            "PREPARE get_node(int8) AS"
-            "  SELECT id, lon, lat FROM {schema}\"{prefix}_nodes\""
-            "  WHERE id = $1"};
-    }
-
-    return sql;
-}
-
-static table_sql sql_for_nodes_format2(middle_pgsql_options const &options)
-{
-    table_sql sql{};
-
-    sql.name = "{prefix}_nodes";
-
-    if (options.nodes) {
-        sql.create_table =
-            "CREATE {unlogged} TABLE {schema}\"{prefix}_nodes\" ("
-            " id int8 PRIMARY KEY {using_tablespace},"
-            " lat int4 NOT NULL,"
-            " lon int4 NOT NULL,"
-            "{attribute_columns_definition}"
-            " tags jsonb"
-            ") {data_tablespace}";
-
-        sql.prepare_queries = {
-            "PREPARE get_node_list(int8[]) AS"
-            " SELECT id, lon, lat FROM {schema}\"{prefix}_nodes\""
-            " WHERE id = ANY($1::int8[])",
-            "PREPARE get_node(int8) AS"
-            " SELECT id, lon, lat FROM {schema}\"{prefix}_nodes\""
-            " WHERE id = $1"};
-    }
-
-    return sql;
-}
-
-static table_sql sql_for_ways_format1(uint8_t way_node_index_id_shift)
-{
-    table_sql sql{};
-
-    sql.name = "{prefix}_ways";
-
-    sql.create_table = "CREATE {unlogged} TABLE {schema}\"{prefix}_ways\" ("
-                       "  id int8 PRIMARY KEY {using_tablespace},"
-                       "  nodes int8[] NOT NULL,"
-                       "  tags text[]"
-                       ") {data_tablespace}";
-
-    sql.prepare_queries = {"PREPARE get_way(int8) AS"
-                           "  SELECT nodes, tags"
-                           "    FROM {schema}\"{prefix}_ways\" WHERE id = $1",
-                           "PREPARE get_way_list(int8[]) AS"
-                           "  SELECT id, nodes, tags"
-                           "    FROM {schema}\"{prefix}_ways\""
-                           "      WHERE id = ANY($1::int8[])"};
-
-    if (way_node_index_id_shift == 0) {
-        sql.create_fw_dep_indexes = {
-            "CREATE INDEX ON {schema}\"{prefix}_ways\" USING GIN (nodes)"
-            "  WITH (fastupdate = off) {index_tablespace}"};
+    if (options.tblsslim_index.empty()) {
+        params->set("using_tablespace", "");
     } else {
-        sql.create_fw_dep_indexes = {
-            "CREATE OR REPLACE FUNCTION"
-            "    {schema}\"{prefix}_index_bucket\"(int8[])"
-            "  RETURNS int8[] AS $$"
-            "  SELECT ARRAY(SELECT DISTINCT"
-            "    unnest($1) >> {way_node_index_id_shift})"
-            "$$ LANGUAGE SQL IMMUTABLE",
-            "CREATE INDEX \"{prefix}_ways_nodes_bucket_idx\""
-            "  ON {schema}\"{prefix}_ways\""
-            "  USING GIN ({schema}\"{prefix}_index_bucket\"(nodes))"
-            "  WITH (fastupdate = off) {index_tablespace}"};
+        params->set("using_tablespace",
+                    "USING INDEX TABLESPACE " + options.tblsslim_index);
     }
 
-    return sql;
-}
-
-static table_sql sql_for_ways_format2(middle_pgsql_options const &options)
-{
-    table_sql sql{};
-
-    sql.name = "{prefix}_ways";
-
-    sql.create_table = "CREATE {unlogged} TABLE {schema}\"{prefix}_ways\" ("
-                       " id int8 PRIMARY KEY {using_tablespace},"
-                       "{attribute_columns_definition}"
-                       " nodes int8[] NOT NULL,"
-                       " tags jsonb"
-                       ") {data_tablespace}";
-
-    sql.prepare_queries = {"PREPARE get_way(int8) AS"
-                           " SELECT nodes, tags{attribute_columns_use}"
-                           " FROM {schema}\"{prefix}_ways\" o"
-                           " {users_table_access}"
-                           " WHERE o.id = $1",
-                           "PREPARE get_way_list(int8[]) AS"
-                           " SELECT o.id, nodes, tags{attribute_columns_use}"
-                           " FROM {schema}\"{prefix}_ways\" o"
-                           "  {users_table_access}"
-                           " WHERE o.id = ANY($1::int8[])"};
-
-    if (options.way_node_index_id_shift == 0) {
-        sql.create_fw_dep_indexes = {
-            "CREATE INDEX ON {schema}\"{prefix}_ways\" USING GIN (nodes)"
-            "  WITH (fastupdate = off) {index_tablespace}"};
+    if (options.extra_attributes) {
+        params->set("attribute_columns_definition",
+                    " created timestamp with time zone,"
+                    " version int4,"
+                    " changeset_id int4,"
+                    " user_id int4,");
+        params->set("attribute_columns_use",
+                    ", EXTRACT(EPOCH FROM created) AS created, version, "
+                    "changeset_id, user_id, u.name");
+        params->set("users_table_access", "LEFT JOIN " + schema + '"' +
+                                              options.prefix +
+                                              "_users\" u ON o.user_id = u.id");
     } else {
-        sql.create_fw_dep_indexes = {
-            "CREATE OR REPLACE FUNCTION"
-            "    {schema}\"{prefix}_index_bucket\"(int8[])"
-            "  RETURNS int8[] AS $$"
-            "  SELECT ARRAY(SELECT DISTINCT"
-            "    unnest($1) >> {way_node_index_id_shift})"
-            "$$ LANGUAGE SQL IMMUTABLE",
-            "CREATE INDEX \"{prefix}_ways_nodes_bucket_idx\""
-            "  ON {schema}\"{prefix}_ways\""
-            "  USING GIN ({schema}\"{prefix}_index_bucket\"(nodes))"
-            "  WITH (fastupdate = off) {index_tablespace}"};
+        params->set("attribute_columns_definition", "");
+        params->set("attribute_columns_use", "");
+        params->set("users_table_access", "");
     }
-
-    return sql;
 }
 
-static table_sql sql_for_relations_format1()
-{
-    table_sql sql{};
-
-    sql.name = "{prefix}_rels";
-
-    sql.create_table = "CREATE {unlogged} TABLE {schema}\"{prefix}_rels\" ("
-                       "  id int8 PRIMARY KEY {using_tablespace},"
-                       "  way_off int2,"
-                       "  rel_off int2,"
-                       "  parts int8[],"
-                       "  members text[],"
-                       "  tags text[]"
-                       ") {data_tablespace}";
-
-    sql.prepare_queries = {"PREPARE get_rel(int8) AS"
-                           "  SELECT members, tags"
-                           "    FROM {schema}\"{prefix}_rels\" WHERE id = $1"};
-
-    sql.create_fw_dep_indexes = {
-        "CREATE INDEX ON {schema}\"{prefix}_rels\" USING GIN (parts)"
-        "  WITH (fastupdate = off) {index_tablespace}"};
-
-    return sql;
-}
-
-static table_sql sql_for_relations_format2()
-{
-    table_sql sql{};
-
-    sql.name = "{prefix}_rels";
-
-    sql.create_table = "CREATE {unlogged} TABLE {schema}\"{prefix}_rels\" ("
-                       " id int8 PRIMARY KEY {using_tablespace},"
-                       "{attribute_columns_definition}"
-                       " members jsonb NOT NULL,"
-                       " tags jsonb"
-                       ") {data_tablespace}";
-
-    sql.prepare_queries = {"PREPARE get_rel(int8) AS"
-                           " SELECT members, tags{attribute_columns_use}"
-                           " FROM {schema}\"{prefix}_rels\" o"
-                           " {users_table_access}"
-                           " WHERE o.id = $1"};
-
-    sql.create_fw_dep_indexes = {
-        "CREATE OR REPLACE FUNCTION"
-        " {schema}\"{prefix}_member_ids\"(jsonb, char)"
-        " RETURNS int8[] AS $$"
-        "  SELECT array_agg((el->>'ref')::int8)"
-        "   FROM jsonb_array_elements($1) AS el"
-        "    WHERE el->>'type' = $2"
-        "$$ LANGUAGE SQL IMMUTABLE",
-        "CREATE INDEX \"{prefix}_rels_node_members_idx\""
-        "  ON {schema}\"{prefix}_rels\" USING GIN"
-        "  (({schema}\"{prefix}_member_ids\"(members, 'N'::char)))"
-        "  WITH (fastupdate = off) {index_tablespace}",
-        "CREATE INDEX \"{prefix}_rels_way_members_idx\""
-        "  ON {schema}\"{prefix}_rels\" USING GIN"
-        "  (({schema}\"{prefix}_member_ids\"(members, 'W'::char)))"
-        "  WITH (fastupdate = off) {index_tablespace}"};
-
-    return sql;
-}
+} // anonymous namespace
 
 middle_pgsql_t::middle_pgsql_t(std::shared_ptr<thread_pool_t> thread_pool,
                                options_t const *options)
 : middle_t(std::move(thread_pool)), m_options(options),
   m_cache(std::make_unique<node_locations_t>(
       static_cast<std::size_t>(options->cache) * 1024UL * 1024UL)),
-  m_db_connection(m_options->conninfo),
-  m_copy_thread(std::make_shared<db_copy_thread_t>(options->conninfo)),
+  m_db_connection(m_options->connection_params, "middle.main"),
+  m_copy_thread(std::make_shared<db_copy_thread_t>(options->connection_params)),
   m_db_copy(m_copy_thread), m_append(options->append)
 {
     m_store_options.with_attributes = options->extra_attributes;
-    m_store_options.db_format = options->middle_database_format;
-    m_store_options.way_node_index_id_shift = options->way_node_index_id_shift;
 
-    if (m_store_options.db_format == 2 && options->middle_with_nodes) {
+    if (options->middle_with_nodes) {
         m_store_options.nodes = true;
     }
 
@@ -1664,44 +1248,17 @@ middle_pgsql_t::middle_pgsql_t(std::shared_ptr<thread_pool_t> thread_pool,
         m_store_options.untagged_nodes = true;
     } else {
         m_store_options.use_flat_node_file = true;
-        m_persistent_cache = std::make_shared<node_persistent_cache>(
-            options->flat_node_file, options->droptemp);
+        m_persistent_cache = std::make_shared<node_persistent_cache_t>(
+            options->flat_node_file, !options->append, options->droptemp);
     }
 
-    log_debug("Mid: pgsql, cache={}, db_format={}", options->cache,
-              options->middle_database_format);
+    log_debug("Mid: pgsql, cache={}", options->cache);
 
-    bool const has_bucket_index =
-        check_bucket_index(&m_db_connection, options->prefix);
+    init_params(&m_params, *options);
 
-    if (!has_bucket_index && options->append &&
-        options->with_forward_dependencies) {
-        log_debug("You don't have a bucket index. See manual for details.");
-    }
-
-    if (m_store_options.db_format == 1) {
-        m_tables.nodes() = table_desc{
-            *options,
-            sql_for_nodes_format1(!m_store_options.use_flat_node_file)};
-
-        m_tables.ways() = table_desc{
-            *options,
-            sql_for_ways_format1(m_store_options.way_node_index_id_shift)};
-
-        m_tables.relations() =
-            table_desc{*options, sql_for_relations_format1()};
-    } else {
-        m_tables.nodes() =
-            table_desc{*options, sql_for_nodes_format2(m_store_options)};
-
-        m_tables.ways() =
-            table_desc{*options, sql_for_ways_format2(m_store_options)};
-
-        m_tables.relations() =
-            table_desc{*options, sql_for_relations_format2()};
-
-        m_users_table = table_desc{*options, sql_for_users(m_store_options)};
-    }
+    m_tables.nodes() = table_desc_t{*options, "nodes"};
+    m_tables.ways() = table_desc_t{*options, "ways"};
+    m_tables.relations() = table_desc_t{*options, "rels"};
 }
 
 void middle_pgsql_t::set_requirements(
@@ -1710,27 +1267,55 @@ void middle_pgsql_t::set_requirements(
     log_debug("Middle 'pgsql' options:");
     log_debug("  nodes: {}", m_store_options.nodes);
     log_debug("  untagged_nodes: {}", m_store_options.untagged_nodes);
-    log_debug("  db_format: {}", m_store_options.db_format);
     log_debug("  use_flat_node_file: {}", m_store_options.use_flat_node_file);
-    log_debug("  way_node_index_id_shift: {}",
-              m_store_options.way_node_index_id_shift);
     log_debug("  with_attributes: {}", m_store_options.with_attributes);
 }
 
-std::shared_ptr<middle_query_t>
-middle_pgsql_t::get_query_instance()
+std::shared_ptr<middle_query_t> middle_pgsql_t::get_query_instance()
 {
     // NOTE: this is thread safe for use in pending async processing only
     // because during that process they are only read from
     auto mid = std::make_unique<middle_query_pgsql_t>(
-        m_options->conninfo, m_cache, m_persistent_cache, m_store_options);
+        m_options->connection_params, m_cache, m_persistent_cache,
+        m_store_options);
 
-    // We use a connection per table to enable the use of COPY
-    for (auto &table : m_tables) {
-        for (auto const &query : table.m_prepare_queries) {
-            mid->exec_sql(query);
-        }
+    if (m_store_options.nodes) {
+        mid->prepare("get_node_location",
+                     render_template(
+                         "SELECT id, lon, lat FROM {schema}\"{prefix}_nodes\""
+                         " WHERE id = $1::int8"));
+
+        mid->prepare("get_node_list",
+                     render_template(
+                         "SELECT id, lon, lat FROM {schema}\"{prefix}_nodes\""
+                         " WHERE id = ANY($1::int8[])"));
+
+        mid->prepare(
+            "get_node",
+            render_template("SELECT lon, lat, tags{attribute_columns_use}"
+                            " FROM {schema}\"{prefix}_nodes\" o"
+                            " {users_table_access}"
+                            " WHERE o.id = $1::int8"));
     }
+
+    mid->prepare("get_way",
+                 render_template("SELECT nodes, tags{attribute_columns_use}"
+                                 " FROM {schema}\"{prefix}_ways\" o"
+                                 " {users_table_access}"
+                                 " WHERE o.id = $1::int8"));
+
+    mid->prepare(
+        "get_way_list",
+        render_template("SELECT o.id, nodes, tags{attribute_columns_use}"
+                        " FROM {schema}\"{prefix}_ways\" o"
+                        "  {users_table_access}"
+                        " WHERE o.id = ANY($1::int8[])"));
+
+    mid->prepare("get_rel",
+                 render_template("SELECT members, tags{attribute_columns_use}"
+                                 " FROM {schema}\"{prefix}_rels\" o"
+                                 " {users_table_access}"
+                                 " WHERE o.id = $1::int8"));
 
     return std::shared_ptr<middle_query_t>(mid.release());
 }

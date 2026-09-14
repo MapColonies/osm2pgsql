@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -15,8 +15,9 @@
 #include "tile.hpp"
 
 gen_tile_vector_union_t::gen_tile_vector_union_t(pg_conn_t *connection,
-                                                 params_t *params)
-: gen_tile_t(connection, params), m_timer_simplify(add_timer("simplify"))
+                                                 bool append, params_t *params)
+: gen_tile_t(connection, append, params),
+  m_timer_simplify(add_timer("simplify"))
 {
     check_src_dest_table_params_exist();
 
@@ -35,48 +36,48 @@ gen_tile_vector_union_t::gen_tile_vector_union_t(pg_conn_t *connection,
     }
 
     if (with_group_by()) {
-        dbexec(R"(
-PREPARE gen_geoms (int, int, int) AS
- WITH gen_tile_input AS (
-  SELECT "{group_by_column}" AS col, "{geom_column}" AS geom FROM {src}
-   WHERE "{geom_column}" && ST_TileEnvelope($1, $2, $3, margin => {margin})
- ),
- buffered AS (
-  SELECT col, ST_Buffer(geom, {buffer_size}) AS geom
-   FROM gen_tile_input
- ),
- merged AS (
-  SELECT col, ST_Union(geom) AS geom
-   FROM buffered GROUP BY col
- ),
- unbuffered AS (
-  SELECT col, ST_Buffer(ST_Buffer(geom, -2 * {buffer_size}), {buffer_size}) AS geom
-   FROM merged
- )
- INSERT INTO {dest} (x, y, "{group_by_column}", "{geom_column}")
-  SELECT $2, $3, col, (ST_Dump(geom)).geom FROM unbuffered
+        dbprepare("gen_geoms", R"(
+WITH gen_tile_input AS (
+ SELECT "{group_by_column}" AS col, "{geom_column}" AS geom FROM {src}
+  WHERE "{geom_column}" &&
+        ST_TileEnvelope($1::int, $2::int, $3::int, margin => {margin})
+),
+buffered AS (
+ SELECT col, ST_Buffer(geom, {buffer_size}) AS geom
+  FROM gen_tile_input
+),
+merged AS (
+ SELECT col, ST_Union(geom) AS geom
+  FROM buffered GROUP BY col
+),
+unbuffered AS (
+ SELECT col, ST_Buffer(ST_Buffer(geom, -2 * {buffer_size}), {buffer_size}) AS geom
+  FROM merged
+)
+INSERT INTO {dest} (x, y, "{group_by_column}", "{geom_column}")
+ SELECT $2::int, $3::int, col, (ST_Dump(geom)).geom FROM unbuffered
 )");
     } else {
-        dbexec(R"(
-PREPARE gen_geoms (int, int, int) AS
- WITH gen_tile_input AS (
-  SELECT "{geom_column}" AS geom FROM {src}
-   WHERE "{geom_column}" && ST_TileEnvelope($1, $2, $3, margin => {margin})
- ),
- buffered AS (
-  SELECT ST_Buffer(geom, {buffer_size}) AS geom
-   FROM gen_tile_input
- ),
- merged AS (
-  SELECT ST_Union(geom) AS geom
-   FROM buffered
- ),
- unbuffered AS (
-  SELECT ST_Buffer(ST_Buffer(geom, -2 * {buffer_size}), {buffer_size}) AS geom
-   FROM merged
- )
- INSERT INTO {dest} (x, y, "{geom_column}")
-  SELECT $2, $3, (ST_Dump(geom)).geom FROM unbuffered
+        dbprepare("gen_geoms", R"(
+WITH gen_tile_input AS (
+ SELECT "{geom_column}" AS geom FROM {src}
+  WHERE "{geom_column}" &&
+        ST_TileEnvelope($1::int, $2::int, $3::int, margin => {margin})
+),
+buffered AS (
+ SELECT ST_Buffer(geom, {buffer_size}) AS geom
+  FROM gen_tile_input
+),
+merged AS (
+ SELECT ST_Union(geom) AS geom
+  FROM buffered
+),
+unbuffered AS (
+ SELECT ST_Buffer(ST_Buffer(geom, -2 * {buffer_size}), {buffer_size}) AS geom
+  FROM merged
+)
+INSERT INTO {dest} (x, y, "{geom_column}")
+ SELECT $2::int, $3::int, (ST_Dump(geom)).geom FROM unbuffered
 )");
     }
 }
@@ -95,4 +96,9 @@ void gen_tile_vector_union_t::process(tile_t const &tile)
     log_gen("Inserted {} generalized polygons", result.affected_rows());
 }
 
-void gen_tile_vector_union_t::post() { dbexec("ANALYZE {dest}"); }
+void gen_tile_vector_union_t::post()
+{
+    if (!append_mode()) {
+        dbexec("ANALYZE {dest}");
+    }
+}

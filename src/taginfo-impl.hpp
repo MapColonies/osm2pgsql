@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -19,7 +19,7 @@
 #include <utility>
 #include <vector>
 
-enum column_flags : unsigned int
+enum column_flags : unsigned int // NOLINT(performance-enum-size)
 {
     FLAG_POLYGON = 1, /* For polygon table */
     FLAG_LINEAR = 2,  /* For lines table */
@@ -36,15 +36,15 @@ enum column_flags : unsigned int
 /* Table columns, representing key= tags */
 struct taginfo
 {
-    ColumnType column_type() const
+    column_type_t column_type() const
     {
         if (flags & FLAG_INT_TYPE) {
-            return ColumnType::INT;
+            return column_type_t::INT;
         }
         if (flags & FLAG_REAL_TYPE) {
-            return ColumnType::REAL;
+            return column_type_t::REAL;
         }
-        return ColumnType::TEXT;
+        return column_type_t::TEXT;
     }
 
     std::string name;
@@ -53,7 +53,7 @@ struct taginfo
 };
 
 /* list of exported tags */
-class export_list
+class export_list_t
 {
 public:
     void add(osmium::item_type type, taginfo const &info);
@@ -76,6 +76,6 @@ unsigned parse_tag_flags(std::string const &flags, int lineno);
  * Returns `true` if the 'way_area' column should (implicitly) exist, or
  * `false` if it should be suppressed.
  */
-bool read_style_file(std::string const &filename, export_list *exlist);
+bool read_style_file(std::string const &filename, export_list_t *exlist);
 
 #endif // OSM2PGSQL_TAGINFO_IMPL_HPP

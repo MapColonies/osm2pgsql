@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -37,7 +37,10 @@ namespace testing::pg {
 class conn_t : public pg_conn_t
 {
 public:
-    conn_t(std::string const &conninfo) : pg_conn_t(conninfo) {}
+    explicit conn_t(connection_params_t const &connection_params)
+    : pg_conn_t(connection_params, "test")
+    {
+    }
 
     std::string result_as_string(std::string const &cmd) const
     {
@@ -100,7 +103,9 @@ public:
     tempdb_t() noexcept
     {
         try {
-            conn_t conn{"dbname=postgres"};
+            connection_params_t connection_params;
+            connection_params.set("dbname", "postgres");
+            conn_t const conn{connection_params};
 
             m_db_name =
                 fmt::format("osm2pgsql-test-{}-{}", getpid(), time(nullptr));
@@ -108,7 +113,7 @@ public:
             conn.exec(R"(CREATE DATABASE "{}" WITH ENCODING 'UTF8')",
                       m_db_name);
 
-            conn_t local = connect();
+            conn_t const local = connect();
             local.exec("CREATE EXTENSION postgis");
             local.exec("CREATE EXTENSION hstore");
             init_database_capabilities(local);
@@ -117,7 +122,7 @@ public:
                        "Test database cannot be created: {}\n"
                        "Did you mean to run 'pg_virtualenv ctest'?\n",
                        e.what());
-            std::exit(1);
+            std::exit(1); // NOLINT(concurrency-mt-unsafe)
         }
     }
 
@@ -127,28 +132,40 @@ public:
     tempdb_t(tempdb_t &&) = delete;
     tempdb_t &operator=(tempdb_t const &&) = delete;
 
+    // We want to terminate the program if there is an exception thrown inside
+    // the destructor.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     ~tempdb_t() noexcept
     {
-        if (!m_db_name.empty()) {
-            // Disable removal of the test database by setting the environment
-            // variable OSM2PGSQL_KEEP_TEST_DB to anything. This can be useful
-            // when debugging tests.
-            char const *const keep_db = std::getenv("OSM2PGSQL_KEEP_TEST_DB");
-            if (keep_db != nullptr) {
-                return;
-            }
-            try {
-                conn_t conn{"dbname=postgres"};
-                conn.exec(R"(DROP DATABASE IF EXISTS "{}")", m_db_name);
-            } catch (...) {
-                fprintf(stderr, "DROP DATABASE failed. Ignored.\n");
-            }
+        if (m_db_name.empty()) {
+            return;
+        }
+
+        // Disable removal of the test database by setting the environment
+        // variable OSM2PGSQL_KEEP_TEST_DB to anything. This can be useful
+        // when debugging tests.
+        // NOLINTNEXTLINE(concurrency-mt-unsafe)
+        char const *const keep_db = std::getenv("OSM2PGSQL_KEEP_TEST_DB");
+        if (keep_db != nullptr) {
+            return;
+        }
+        try {
+            connection_params_t connection_params;
+            connection_params.set("dbname", "postgres");
+            conn_t const conn{connection_params};
+            conn.exec(R"(DROP DATABASE IF EXISTS "{}")", m_db_name);
+        } catch (...) {
+            fmt::print(stderr, "DROP DATABASE failed. Ignored.\n");
         }
     }
 
-    conn_t connect() const { return conn_t{conninfo()}; }
+    conn_t connect() const { return conn_t{connection_params()}; }
 
-    std::string conninfo() const { return "dbname=" + m_db_name; }
+    connection_params_t connection_params() const {
+        connection_params_t params;
+        params.set("dbname", m_db_name);
+        return params;
+    }
 
 private:
     std::string m_db_name;

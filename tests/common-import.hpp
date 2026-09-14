@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -17,12 +17,12 @@
 #include <osmium/osm/types_from_string.hpp>
 #include <osmium/visitor.hpp>
 
-#include "dependency-manager.hpp"
 #include "input.hpp"
 #include "middle-pgsql.hpp"
 #include "middle-ram.hpp"
 #include "osmdata.hpp"
 #include "output.hpp"
+#include "properties.hpp"
 #include "taginfo-impl.hpp"
 
 #include "common-pg.hpp"
@@ -35,14 +35,11 @@
 namespace testing {
 
 inline void parse_file(options_t const &options,
-                       std::unique_ptr<dependency_manager_t> dependency_manager,
                        std::shared_ptr<middle_t> const &mid,
                        std::shared_ptr<output_t> const &output,
                        char const *filename = nullptr, bool do_stop = true)
 {
-    osmdata_t osmdata{std::move(dependency_manager), mid, output, options};
-
-    osmdata.start();
+    osmdata_t osmdata{mid, output, options};
 
     std::string filepath{TESTDATA_DIR};
     if (filename) {
@@ -72,7 +69,7 @@ public:
     template <typename CONTAINER>
     explicit data_t(CONTAINER const &objects)
     {
-        std::copy(std::begin(objects), std::end(objects),
+        std::copy(std::cbegin(objects), std::cend(objects),
                   std::back_inserter(m_objects));
     }
 
@@ -81,13 +78,13 @@ public:
     template <typename CONTAINER>
     void add(CONTAINER const &objects)
     {
-        std::copy(std::begin(objects), std::end(objects),
+        std::copy(std::cbegin(objects), std::cend(objects),
                   std::back_inserter(m_objects));
     }
 
     void add(std::initializer_list<char const *> const &objects)
     {
-        std::copy(std::begin(objects), std::end(objects),
+        std::copy(std::cbegin(objects), std::cend(objects),
                   std::back_inserter(m_objects));
     }
 
@@ -114,7 +111,7 @@ private:
     static std::pair<osmium::item_type, osmium::object_id_type>
     get_type_id(std::string const &str)
     {
-        std::string ti(str, 0, str.find(' '));
+        std::string const ti(str, 0, str.find(' '));
         return osmium::string_to_object_id(ti.c_str(),
                                            osmium::osm_entity_bits::nwr);
     }
@@ -134,26 +131,21 @@ public:
                     std::initializer_list<std::string> input_data,
                     std::string const &format = "opl")
     {
-        options.conninfo = m_db.conninfo();
+        options.connection_params.merge_with(m_db.connection_params());
+
+        properties_t const properties{options.connection_params,
+                                      options.middle_dbschema};
 
         auto thread_pool = std::make_shared<thread_pool_t>(1U);
         auto middle = create_middle(thread_pool, options);
         middle->start();
 
         auto output = output_t::create_output(middle->get_query_instance(),
-                                              thread_pool, options);
+                                              thread_pool, options, properties);
 
         middle->set_requirements(output->get_requirements());
 
-        auto dependency_manager =
-            options.with_forward_dependencies
-                ? std::make_unique<full_dependency_manager_t>(middle)
-                : std::make_unique<dependency_manager_t>();
-
-        osmdata_t osmdata{std::move(dependency_manager), middle, output,
-                          options};
-
-        osmdata.start();
+        osmdata_t osmdata{middle, output, options};
 
         std::vector<osmium::io::File> files;
         for (auto const &data : input_data) {
@@ -173,22 +165,21 @@ public:
 
     void run_file(options_t options, char const *file = nullptr)
     {
-        options.conninfo = m_db.conninfo();
+        options.connection_params.merge_with(m_db.connection_params());
+
+        properties_t const properties{options.connection_params,
+                                      options.middle_dbschema};
 
         auto thread_pool = std::make_shared<thread_pool_t>(1U);
         auto middle = std::make_shared<middle_ram_t>(thread_pool, &options);
         middle->start();
 
         auto output = output_t::create_output(middle->get_query_instance(),
-                                              thread_pool, options);
+                                              thread_pool, options, properties);
 
         middle->set_requirements(output->get_requirements());
 
-        auto dependency_manager =
-            std::make_unique<full_dependency_manager_t>(middle);
-
-        parse_file(options, std::move(dependency_manager), middle, output,
-                   file);
+        parse_file(options, middle, output, file);
 
         middle->wait();
         output->wait();

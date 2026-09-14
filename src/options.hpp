@@ -6,9 +6,11 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
+
+#include "pgsql-params.hpp"
 
 #include <osmium/osm/box.hpp>
 
@@ -17,9 +19,9 @@
 #include <string>
 #include <vector>
 
-class reprojection;
+class reprojection_t;
 
-enum class command_t
+enum class command_t : uint8_t
 {
     help,
     version,
@@ -37,18 +39,6 @@ enum class hstore_column : char
     all = 2
 };
 
-/// Database connection options.
-struct database_options_t
-{
-    std::string db;
-    std::string username;
-    std::string host;
-    std::string password;
-    std::string port;
-};
-
-std::string build_conninfo(database_options_t const &opt);
-
 /**
  * Structure for storing command-line and other options
  */
@@ -56,43 +46,44 @@ struct options_t
 {
     command_t command = command_t::process;
 
-    std::string conninfo; ///< connection info for database
+    /// Parameters for initializing database connections
+    connection_params_t connection_params;
 
     std::string prefix{"planet_osm"};         ///< prefix for table names
     bool prefix_is_set = false;
 
     /// Pg Tablespace to store indexes on main tables (no default TABLESPACE)
-    std::string tblsmain_index{};
+    std::string tblsmain_index;
 
     /// Pg Tablespace to store indexes on slim tables (no default TABLESPACE)
-    std::string tblsslim_index{};
+    std::string tblsslim_index;
 
     /// Pg Tablespace to store main tables (no default TABLESPACE)
-    std::string tblsmain_data{};
+    std::string tblsmain_data;
 
     /// Pg Tablespace to store slim tables (no default TABLESPACE)
-    std::string tblsslim_data{};
+    std::string tblsslim_data;
 
     /// Default Pg schema.
     std::string dbschema{"public"};
 
     /// Pg schema to store middle tables in.
-    std::string middle_dbschema{};
+    std::string middle_dbschema;
 
     /// Pg schema to store output tables in.
-    std::string output_dbschema{};
+    std::string output_dbschema;
 
-    std::string style{}; ///< style file to use
+    std::string style; ///< style file to use
 
     /// Name of the flat node file used. Empty if flat node file is not enabled.
-    std::string flat_node_file{};
+    std::string flat_node_file;
 
     std::string tag_transform_script;
 
     /// File name to output expired tiles list to
     std::string expire_tiles_filename{"dirty_tiles"};
 
-    std::string output_backend{"pgsql"};
+    std::string output_backend;
     std::string input_format; ///< input file format (default: autodetect)
 
     osmium::Box bbox;
@@ -102,7 +93,7 @@ struct options_t
 
     std::vector<std::string> input_files;
 
-    std::shared_ptr<reprojection> projection; ///< SRS of projection
+    std::shared_ptr<reprojection_t> projection; ///< SRS of projection
 
     /// Max bbox size in either dimension to expire full bbox for a polygon
     double expire_tiles_max_bbox = 20000.0;
@@ -117,15 +108,12 @@ struct options_t
     unsigned int num_procs = 1;
 
     /**
-     * How many bits should the node id be shifted for the way node index?
-     * The result is a lossy index which is significantly smaller.
-     * See https://osm2pgsql.org/doc/manual.html#bucket-index-for-slim-mode
-     * Use 0 to use a classic loss-less GIN index.
+     * Middle database format:
+     * 0 = non-slim mode, no database middle (ram middle)
+     * 1 = slim mode, legacy database format (not used any more)
+     * 2 = slim mode, new database format
      */
-    uint8_t way_node_index_id_shift = 5;
-
-    /// Database format (0=unknown/no database middle, 1=legacy, 2=new)
-    uint8_t middle_database_format = 1;
+    uint8_t middle_database_format = 0;
 
     /**
      * Should nodes (with tags) be stored in the middle? If no flat node file
@@ -143,12 +131,6 @@ struct options_t
     bool keep_coastlines = false;
     bool droptemp = false; ///< drop slim mode temp tables after act
 
-    /**
-     * Should changes of objects be propagated forwards (from nodes to ways and
-     * from node/way members to parent relations)?
-     */
-    bool with_forward_dependencies = true;
-
     /// only copy rows that match an explicitly listed key
     bool hstore_match_only = false;
 
@@ -160,11 +142,7 @@ struct options_t
     bool reproject_area = false;
 
     bool parallel_indexing = true;
-    bool create = false;
     bool pass_prompt = false;
-
-    bool output_backend_set = false;
-    bool style_set = false;
 }; // struct options_t
 
 #endif // OSM2PGSQL_OPTIONS_HPP

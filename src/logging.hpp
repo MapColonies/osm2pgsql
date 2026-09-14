@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -18,10 +18,11 @@
 #include <fmt/color.h>
 
 #include <atomic>
+#include <cstdint>
 #include <cstdio>
 #include <utility>
 
-enum class log_level
+enum class log_level : uint8_t
 {
     debug = 1,
     info = 2,
@@ -33,12 +34,13 @@ enum class log_level
  * This class contains the logging state and code. It is intended as a
  * singleton class. Its use is mostly wrapped in the log_*() free functions.
  */
-class logger
+class logger_t
 {
 public:
-    template <typename S, typename... TArgs>
+    template <typename... TArgs>
     void log(log_level with_level, char const *prefix,
-             fmt::text_style const &style, S const &format_str, TArgs &&...args)
+             fmt::text_style const &style,
+             fmt::format_string<TArgs...> format_str, TArgs &&...args)
     {
         if (with_level < m_current_level) {
             return;
@@ -105,41 +107,41 @@ private:
     bool m_use_color = osmium::util::isatty(2);
 #endif
 
-}; // class logger
+}; // class logger_t
 
-logger &get_logger() noexcept;
+logger_t &get_logger() noexcept;
 
-template <typename S, typename... TArgs>
-void log_debug(S const &format_str, TArgs &&... args)
+template <typename... TArgs>
+void log_debug(fmt::format_string<TArgs...> format_str, TArgs &&...args)
 {
     get_logger().log(log_level::debug, nullptr, {}, format_str,
                      std::forward<TArgs>(args)...);
 }
 
-template <typename S, typename... TArgs>
-void log_info(S const &format_str, TArgs &&... args)
+template <typename... TArgs>
+void log_info(fmt::format_string<TArgs...> format_str, TArgs &&...args)
 {
     get_logger().log(log_level::info, nullptr, {}, format_str,
                      std::forward<TArgs>(args)...);
 }
 
-template <typename S, typename... TArgs>
-void log_warn(S const &format_str, TArgs &&... args)
+template <typename... TArgs>
+void log_warn(fmt::format_string<TArgs...> format_str, TArgs &&...args)
 {
     get_logger().log(log_level::warn, "WARNING", fg(fmt::color::red),
                      format_str, std::forward<TArgs>(args)...);
 }
 
-template <typename S, typename... TArgs>
-void log_error(S const &format_str, TArgs &&... args)
+template <typename... TArgs>
+void log_error(fmt::format_string<TArgs...> format_str, TArgs &&...args)
 {
     get_logger().log(log_level::error, "ERROR",
                      fmt::emphasis::bold | fg(fmt::color::red), format_str,
                      std::forward<TArgs>(args)...);
 }
 
-template <typename S, typename... TArgs>
-void log_sql(S const &format_str, TArgs &&... args)
+template <typename... TArgs>
+void log_sql(fmt::format_string<TArgs...> format_str, TArgs &&...args)
 {
     auto &logger = get_logger();
     if (logger.log_sql()) {
@@ -148,8 +150,8 @@ void log_sql(S const &format_str, TArgs &&... args)
     }
 }
 
-template <typename S, typename... TArgs>
-void log_sql_data(S const &format_str, TArgs &&... args)
+template <typename... TArgs>
+void log_sql_data(fmt::format_string<TArgs...> format_str, TArgs &&...args)
 {
     auto &logger = get_logger();
     if (logger.log_sql_data()) {

@@ -6,16 +6,19 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "geom.hpp"
-#include "tile.hpp"
 
 #include <opencv2/core.hpp>
 
 #include <cstddef>
+#include <string>
+#include <vector>
+
+class tile_t;
 
 /**
  * This class wraps the image class from the OpenCV library.
@@ -73,7 +76,5 @@ private:
     std::size_t m_buffer;
     image_type m_rast;
 }; // class canvas_t
-
-std::string to_hex(std::string const &in);
 
 #endif // OSM2PGSQL_CANVAS_HPP

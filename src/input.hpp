@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -35,8 +35,8 @@ struct type_id
 
 struct file_info
 {
-    osmium::io::Header header{};
-    osmium::Timestamp last_timestamp{};
+    osmium::io::Header header;
+    osmium::Timestamp last_timestamp;
 };
 
 /**

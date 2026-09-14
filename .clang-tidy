@@ -1,5 +1,5 @@
 ---
-Checks: '*,-abseil-*,-altera-*,-android-cloexec-*,-bugprone-easily-swappable-parameters,-cert-err58-cpp,-cppcoreguidelines-avoid-magic-numbers,-cppcoreguidelines-avoid-non-const-global-variables,-cppcoreguidelines-owning-memory,-cppcoreguidelines-pro-bounds-array-to-pointer-decay,-cppcoreguidelines-pro-bounds-pointer-arithmetic,-cppcoreguidelines-pro-type-cstyle-cast,-cppcoreguidelines-pro-type-reinterpret-cast,-cppcoreguidelines-pro-type-static-cast-downcast,-cppcoreguidelines-pro-type-vararg,-fuchsia-*,-google-readability-casting,-google-readability-todo,-hicpp-named-parameter,-hicpp-no-array-decay,-hicpp-vararg,-llvm-include-order,-llvm-header-guard,-llvmlibc-*,-misc-no-recursion,-modernize-use-nodiscard,-modernize-use-trailing-return-type,-readability-identifier-length,-readability-implicit-bool-conversion,-readability-named-parameter,-readability-magic-numbers'
+Checks: '*,-abseil-*,-altera-*,-android-cloexec-*,-boost-use-ranges,-bugprone-chained-comparison,-bugprone-easily-swappable-parameters,-cert-err58-cpp,-cppcoreguidelines-avoid-do-while,-cppcoreguidelines-avoid-magic-numbers,-cppcoreguidelines-avoid-non-const-global-variables,-cppcoreguidelines-owning-memory,-cppcoreguidelines-pro-bounds-array-to-pointer-decay,-cppcoreguidelines-pro-bounds-pointer-arithmetic,-cppcoreguidelines-pro-type-cstyle-cast,-cppcoreguidelines-pro-type-reinterpret-cast,-cppcoreguidelines-pro-type-static-cast-downcast,-cppcoreguidelines-pro-type-vararg,-fuchsia-*,-google-readability-casting,-google-readability-todo,-hicpp-named-parameter,-hicpp-no-array-decay,-hicpp-vararg,-llvm-include-order,-llvm-header-guard,-llvmlibc-*,-misc-include-cleaner,-misc-no-recursion,-modernize-use-nodiscard,-modernize-use-trailing-return-type,-readability-identifier-length,-readability-implicit-bool-conversion,-readability-math-missing-parentheses,-readability-named-parameter,-readability-magic-numbers'
 #
 #  cppcoreguidelines-pro-type-cstyle-cast
 #  google-build-using-namespace
@@ -7,6 +7,7 @@ Checks: '*,-abseil-*,-altera-*,-android-cloexec-*,-bugprone-easily-swappable-par
 #  llvm-header-guard
 #  llvm-include-order
 #  hicpp-named-parameter
+#  readability-math-missing-parentheses
 #  readability-named-parameter
 #    Differ from our style guidelines
 #
@@ -19,12 +20,22 @@ Checks: '*,-abseil-*,-altera-*,-android-cloexec-*,-bugprone-easily-swappable-par
 #  android-cloexec-*
 #    O_CLOEXEC isn't available on Windows
 #
+#  boost-use-ranges
+#    Not applicable, we don't want to rely on more code from boost.
+#
+#  bugprone-chained-comparison
+#    Triggerd by the Catch library in many places.
+#
 #  bugprone-easily-swappable-parameters
 #    Can't always be avoided.
 #
 #  cert-err58-cpp
 #    There are many of these in the test code, most of them from the Catch
 #    framework. Difficult to avoid.
+#
+#  cppcoreguidelines-avoid-do-while (new in clang-tidy-16)
+#    Its a good idea to avoid them when there are better alternatives, but
+#    sometimes they are the cleanest alternative.
 #
 #  cppcoreguidelines-avoid-magic-numbers
 #  readability-magic-numbers
@@ -55,12 +66,16 @@ Checks: '*,-abseil-*,-altera-*,-android-cloexec-*,-bugprone-easily-swappable-par
 #  llvmlibc-*
 #    Not applicable
 #
+#  misc-include-cleaner (new in clang-tidy-17)
+#    Many instances of this warning, disabled for now. (TODO)
+#
 #  misc-no-recursion
 #    Nothing wrong with recursion
 #
 #  modernize-use-nodiscard
-#    We have a lot of these. Remove it for the time being because there are
-#    too many to fix quickly. (TODO)
+#    Doesn't really make the code clearer if it is all littered with
+#    [[nodiscard]]. Looks like this warning is more suited for a library
+#    than for normal code.
 #
 #  modernize-use-trailing-return-type
 #    We are not that modern...
@@ -73,7 +88,7 @@ Checks: '*,-abseil-*,-altera-*,-android-cloexec-*,-bugprone-easily-swappable-par
 #    Readability is a matter of opinion here
 #
 #WarningsAsErrors: '*'
-HeaderFilterRegex: '\/src\/'
+HeaderFilterRegex: '\/(src|tests)\/'
 CheckOptions:
     - key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
       value: true
@@ -87,4 +102,30 @@ CheckOptions:
       value: 100
     - key: readability-function-cognitive-complexity.IgnoreMacros
       value: true
+    - key: cppcoreguidelines-rvalue-reference-param-not-moved.AllowPartialMove
+      value: true
+    - key: bugprone-empty-catch.IgnoreCatchWithKeywords
+      value: "@todo;@fixme;exception ignored on purpose"
+    - key: readability-identifier-naming.ClassCase
+      value: lower_case
+    - key: readability-identifier-naming.ClassSuffix
+      value: _t
+    - key: readability-identifier-naming.PrivateMemberPrefix
+      value: m_
+    - key: readability-identifier-naming.StructCase
+      value: lower_case
+    - key: readability-identifier-naming.EnumCase
+      value: lower_case
+    - key: readability-identifier-naming.FunctionCase
+      value: lower_case
+    - key: readability-identifier-naming.FunctionIgnoredRegexp
+      value: luaX.*
+    - key: readability-identifier-naming.VariableCase
+      value: lower_case
+    - key: readability-identifier-naming.ConstexprVariableCase
+      value: UPPER_CASE
+    - key: readability-identifier-naming.GlobalConstantCase
+      value: UPPER_CASE
+    - key: readability-identifier-naming.NamespaceCase
+      value: lower_case
 ...

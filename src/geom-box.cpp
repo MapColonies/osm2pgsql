@@ -3,29 +3,23 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "geom-box.hpp"
 
+#include <algorithm>
+#include <variant>
+
 namespace geom {
 
 box_t &box_t::extend(point_t const &point) noexcept
 {
-    if (point.x() < m_min_x) {
-        m_min_x = point.x();
-    }
-    if (point.y() < m_min_y) {
-        m_min_y = point.y();
-    }
-    if (point.x() > m_max_x) {
-        m_max_x = point.x();
-    }
-    if (point.y() > m_max_y) {
-        m_max_y = point.y();
-    }
-
+    m_min_x = std::min(point.x(), m_min_x);
+    m_min_y = std::min(point.y(), m_min_y);
+    m_max_x = std::max(point.x(), m_max_x);
+    m_max_y = std::max(point.y(), m_max_y);
     return *this;
 }
 
@@ -38,18 +32,10 @@ void box_t::extend(point_list_t const &list) noexcept
 
 void box_t::extend(box_t const &box) noexcept
 {
-    if (box.min_x() < m_min_x) {
-        m_min_x = box.min_x();
-    }
-    if (box.min_y() < m_min_y) {
-        m_min_y = box.min_y();
-    }
-    if (box.max_x() > m_max_x) {
-        m_max_x = box.max_x();
-    }
-    if (box.max_y() > m_max_y) {
-        m_max_y = box.max_y();
-    }
+    m_min_x = std::min(box.min_x(), m_min_x);
+    m_min_y = std::min(box.min_y(), m_min_y);
+    m_max_x = std::max(box.max_x(), m_max_x);
+    m_max_y = std::max(box.max_y(), m_max_y);
 }
 
 box_t envelope(geom::nullgeom_t const & /*geom*/) { return box_t{}; }
@@ -113,7 +99,7 @@ box_t envelope(geom::collection_t const &geom)
 
 box_t envelope(geometry_t const &geom)
 {
-    return geom.visit([&](auto const &g) { return envelope(g); });
+    return geom.visit([](auto const &g) { return envelope(g); });
 }
 
 } // namespace geom

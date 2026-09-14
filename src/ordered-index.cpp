@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -26,7 +26,7 @@ void ordered_index_t::add(osmid_t id, std::size_t offset)
         }
         m_ranges.emplace_back(id, offset, m_block_size);
         m_capacity += m_block_size;
-        if (m_block_size < max_block_size) {
+        if (m_block_size < MAX_BLOCK_SIZE) {
             m_block_size <<= 1U;
         }
     }
@@ -40,8 +40,8 @@ void ordered_index_t::add(osmid_t id, std::size_t offset)
     ++m_size;
 }
 
-std::pair<osmid_t, std::size_t> ordered_index_t::get_internal(osmid_t id) const
-    noexcept
+std::pair<osmid_t, std::size_t>
+ordered_index_t::get_internal(osmid_t id) const noexcept
 {
     if (m_ranges.empty()) {
         return {0, not_found_value()};

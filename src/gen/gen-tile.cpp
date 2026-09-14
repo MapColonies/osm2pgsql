@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -16,16 +16,15 @@
 
 #include <cstdlib>
 
-gen_tile_t::gen_tile_t(pg_conn_t *connection, params_t *params)
-: gen_base_t(connection, params), m_timer_delete(add_timer("delete")),
+gen_tile_t::gen_tile_t(pg_conn_t *connection, bool append, params_t *params)
+: gen_base_t(connection, append, params), m_timer_delete(add_timer("delete")),
   m_zoom(parse_zoom())
 {
     m_with_group_by = !get_params().get_identifier("group_by_column").empty();
 
-    if (get_params().get_bool("delete_existing")) {
-        m_delete_existing = true;
-        dbexec("PREPARE del_geoms (int, int) AS"
-               " DELETE FROM {dest} WHERE x=$1 AND y=$2");
+    if (append_mode()) {
+        dbprepare("del_geoms",
+                  "DELETE FROM {dest} WHERE x=$1::int AND y=$2::int");
     }
 }
 
@@ -55,7 +54,7 @@ uint32_t gen_tile_t::parse_zoom()
 
 void gen_tile_t::delete_existing(tile_t const &tile)
 {
-    if (!m_delete_existing) {
+    if (!append_mode()) {
         return;
     }
 

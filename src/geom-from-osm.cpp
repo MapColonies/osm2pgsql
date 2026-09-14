@@ -3,31 +3,45 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "geom-from-osm.hpp"
-#include "osmtypes.hpp"
 
-#include <osmium/area/geom_assembler.hpp>
+#include "geom-area-assembler.hpp"
+
+#include <osmium/memory/buffer.hpp>
+#include <osmium/osm/location.hpp>
+#include <osmium/osm/node.hpp>
+#include <osmium/osm/relation.hpp>
 #include <osmium/osm/way.hpp>
 
+#include <cassert>
 #include <utility>
 
 namespace geom {
 
+void create_point(geometry_t *geom, osmium::Location const &location)
+{
+    if (location.valid()) {
+        auto &point = geom->set<point_t>();
+        point.set_x(location.lon());
+        point.set_y(location.lat());
+    }
+}
+
 void create_point(geometry_t *geom, osmium::Node const &node)
 {
-    auto &point = geom->set<point_t>();
-    point.set_x(node.location().lon());
-    point.set_y(node.location().lat());
+    create_point(geom, node.location());
 }
 
 geometry_t create_point(osmium::Node const &node)
 {
     return geometry_t{point_t{node.location()}};
 }
+
+namespace {
 
 /**
  * Fill point list with locations from nodes list. Consecutive identical
@@ -36,8 +50,7 @@ geometry_t create_point(osmium::Node const &node)
  * Returns true if the result is a valid linestring, i.e. it has more than
  * one point.
  */
-static bool fill_point_list(point_list_t *list,
-                            osmium::NodeRefList const &nodes)
+bool fill_point_list(point_list_t *list, osmium::NodeRefList const &nodes)
 {
     osmium::Location last{};
 
@@ -52,6 +65,25 @@ static bool fill_point_list(point_list_t *list,
 
     return list->size() > 1;
 }
+
+void fill_polygon(polygon_t *polygon, osmium::Area const &area,
+                  osmium::OuterRing const &outer_ring)
+{
+    assert(polygon->inners().empty());
+
+    for (auto const &nr : outer_ring) {
+        polygon->outer().emplace_back(nr.location());
+    }
+
+    for (auto const &inner_ring : area.inner_rings(outer_ring)) {
+        auto &ring = polygon->inners().emplace_back();
+        for (auto const &nr : inner_ring) {
+            ring.emplace_back(nr.location());
+        }
+    }
+}
+
+} // anonymous namespace
 
 void create_linestring(geometry_t *geom, osmium::Way const &way)
 {
@@ -69,7 +101,8 @@ geometry_t create_linestring(osmium::Way const &way)
     return geom;
 }
 
-void create_polygon(geometry_t *geom, osmium::Way const &way)
+void create_polygon(geometry_t *geom, osmium::Way const &way,
+                    osmium::memory::Buffer *area_buffer)
 {
     auto &polygon = geom->set<polygon_t>();
 
@@ -79,32 +112,30 @@ void create_polygon(geometry_t *geom, osmium::Way const &way)
         return;
     }
 
-    osmium::area::AssemblerConfig area_config;
-    area_config.ignore_invalid_locations = true;
-    osmium::area::GeomAssembler assembler{area_config};
-    osmium::memory::Buffer area_buffer{1024};
+    geom::area_assembler_t assembler{area_buffer};
 
-    if (!assembler(way, area_buffer)) {
+    if (!assembler(way)) {
         geom->reset();
         return;
     }
 
-    auto const &area = area_buffer.get<osmium::Area>(0);
-    auto const &ring = *area.begin<osmium::OuterRing>();
+    auto const &area = assembler.get_area();
+    auto const &ring = *area.cbegin<osmium::OuterRing>();
 
     fill_point_list(&polygon.outer(), ring);
 }
 
-geometry_t create_polygon(osmium::Way const &way)
+geometry_t create_polygon(osmium::Way const &way,
+                          osmium::memory::Buffer *area_buffer)
 {
     geometry_t geom{};
-    create_polygon(&geom, way);
+    create_polygon(&geom, way, area_buffer);
     return geom;
 }
 
 void create_multipoint(geometry_t *geom, osmium::memory::Buffer const &buffer)
 {
-    auto nodes = buffer.select<osmium::Node>();
+    auto const nodes = buffer.select<osmium::Node>();
     if (nodes.size() == 1) {
         auto const location = nodes.cbegin()->location();
         if (location.valid()) {
@@ -145,10 +176,10 @@ void create_multilinestring(geometry_t *geom,
                             osmium::memory::Buffer const &buffer,
                             bool force_multi)
 {
-    auto ways = buffer.select<osmium::Way>();
+    auto const ways = buffer.select<osmium::Way>();
     if (ways.size() == 1 && !force_multi) {
         auto &line = geom->set<linestring_t>();
-        auto const &way = *ways.begin();
+        auto const &way = *ways.cbegin();
         if (!fill_point_list(&line, way.nodes())) {
             geom->reset();
         }
@@ -170,7 +201,7 @@ void create_multilinestring(geometry_t *geom,
         // retroactively.
         if (multiline.num_geometries() == 1 && !force_multi) {
             // This has to be done in two steps, because the set<>()
-            // destroys the content of mulitline.
+            // destroys the content of multiline.
             auto p = std::move(multiline[0]);
             geom->set<linestring_t>() = std::move(p);
         }
@@ -185,37 +216,18 @@ geometry_t create_multilinestring(osmium::memory::Buffer const &buffer,
     return geom;
 }
 
-static void fill_polygon(polygon_t *polygon, osmium::Area const &area,
-                         osmium::OuterRing const &outer_ring)
-{
-    assert(polygon->inners().empty());
-
-    for (auto const &nr : outer_ring) {
-        polygon->outer().emplace_back(nr.location());
-    }
-
-    for (auto const &inner_ring : area.inner_rings(outer_ring)) {
-        auto &ring = polygon->inners().emplace_back();
-        for (auto const &nr : inner_ring) {
-            ring.emplace_back(nr.location());
-        }
-    }
-}
-
 void create_multipolygon(geometry_t *geom, osmium::Relation const &relation,
-                         osmium::memory::Buffer const &buffer)
+                         osmium::memory::Buffer const &buffer,
+                         osmium::memory::Buffer *area_buffer)
 {
-    osmium::area::AssemblerConfig area_config;
-    area_config.ignore_invalid_locations = true;
-    osmium::area::GeomAssembler assembler{area_config};
-    osmium::memory::Buffer area_buffer{1024};
+    geom::area_assembler_t assembler{area_buffer};
 
-    if (!assembler(relation, buffer, area_buffer)) {
+    if (!assembler(relation, buffer)) {
         geom->reset();
         return;
     }
 
-    auto const &area = area_buffer.get<osmium::Area>(0);
+    auto const &area = assembler.get_area();
 
     if (area.is_multipolygon()) {
         auto &multipolygon = geom->set<multipolygon_t>();
@@ -226,15 +238,16 @@ void create_multipolygon(geometry_t *geom, osmium::Relation const &relation,
         }
     } else {
         auto &polygon = geom->set<polygon_t>();
-        fill_polygon(&polygon, area, *area.outer_rings().begin());
+        fill_polygon(&polygon, area, *area.outer_rings().cbegin());
     }
 }
 
 geometry_t create_multipolygon(osmium::Relation const &relation,
-                               osmium::memory::Buffer const &buffer)
+                               osmium::memory::Buffer const &buffer,
+                               osmium::memory::Buffer *area_buffer)
 {
     geometry_t geom{};
-    create_multipolygon(&geom, relation, buffer);
+    create_multipolygon(&geom, relation, buffer, area_buffer);
     return geom;
 }
 

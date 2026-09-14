@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -19,11 +19,13 @@
 #include <osmium/memory/buffer.hpp>
 #include <osmium/osm.hpp>
 
+#include <cassert>
 #include <cstddef>
 #include <memory>
 #include <string>
 #include <utility>
 
+class node_persistent_cache_t;
 class thread_pool_t;
 
 /**
@@ -60,9 +62,13 @@ public:
     void way(osmium::Way const &way) override;
     void relation(osmium::Relation const &) override;
 
+    void after_nodes() override;
+
     osmium::Location get_node_location(osmid_t id) const override;
 
     std::size_t nodes_get_list(osmium::WayNodeList *nodes) const override;
+
+    bool node_get(osmid_t id, osmium::memory::Buffer *buffer) const override;
 
     bool way_get(osmid_t id, osmium::memory::Buffer *buffer) const override;
 
@@ -122,6 +128,10 @@ private:
 
     /// Options for this middle.
     middle_ram_options m_store_options;
+
+    /// File cache
+    std::shared_ptr<node_persistent_cache_t> m_persistent_cache;
+
 }; // class middle_ram_t
 
 #endif // OSM2PGSQL_MIDDLE_RAM_HPP

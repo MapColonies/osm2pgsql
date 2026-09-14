@@ -17,6 +17,8 @@ following order (from easiest to understand to the more complex ones):
 
 After that you can dive into more advanced topics:
 
+* [public-transport.lua](public-transport.lua) -- Use multi-stage processing
+  to bring tags from public transport relations to member nodes and ways
 * [route-relations.lua](route-relations.lua) -- Use multi-stage processing
   to bring tags from relations to member ways
 * [unitable.lua](unitable.lua) -- Put all OSM data into a single table
@@ -34,17 +36,21 @@ pgsql (C transform) output:
 
 * [compatible.lua](compatible.lua)
 
-## Dependencies
+The other files demonstrate some specific functionality, look at these if
+and when you need that functionality.
 
-Some of the example files use the `inspect` Lua library to show debugging
-output. It is not needed for the actual functionality of the examples, so if
-you don't have the library, you can remove all uses of `inspect` and the
-scripts should still work.
+* [addresses.lua](addresses.lua) -- Get all objects with addresses and store
+  as point objects in the database
+* [bbox.lua](bbox.lua) -- Use of the `get_bbox()` function to get the bounding
+  boxes of features
+* [expire.lua](expire.lua) -- Tile expiry configuration
+* [indexes.lua](indexes.lua) -- Various options around index creation
+* [labelpoint.lua](labelpoint.lua) -- How to get good labelling points using
+  the `centroid()` and `pole_of_inaccessibility()` functions.
+* [untagged](untagged.lua) -- How to access untagged objects.
 
-The library is available from [the
-source](https://github.com/kikito/inspect.lua) or using
-[LuaRocks](https://luarocks.org/modules/kikito/inspect). Debian/Ubuntu users
-can install the `lua-inspect` package.
+The subdirectory [gen](gen/) contains example configurations for
+generalization support.
 
 ## Public Domain
 

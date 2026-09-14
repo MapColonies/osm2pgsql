@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -27,7 +27,7 @@ std::chrono::microseconds task_result_t::wait()
 }
 
 thread_pool_t::thread_pool_t(unsigned int num_threads)
-: m_work_queue(max_queue_size, "work"), m_joiner(&m_threads)
+: m_work_queue(MAX_QUEUE_SIZE, "work"), m_joiner(&m_threads)
 {
     assert(num_threads > 0);
     try {
@@ -50,7 +50,7 @@ void thread_pool_t::shutdown_all_workers()
 
 void thread_pool_t::worker_thread(unsigned int thread_num)
 {
-    logger::init_thread(thread_num + 1);
+    logger_t::init_thread(thread_num + 1);
 
     while (true) {
         osmium::thread::function_wrapper task;

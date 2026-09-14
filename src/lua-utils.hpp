@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -17,15 +17,19 @@
 
 #include <cassert>
 #include <cstdint>
+#include <initializer_list>
+#include <string_view>
 #include <utility>
 
 void luaX_set_context(lua_State *lua_state, void *ptr) noexcept;
 void *luaX_get_context(lua_State *lua_state) noexcept;
 
+void luaX_pushstring(lua_State *lua_state, std::string_view str) noexcept;
+
 void luaX_add_table_str(lua_State *lua_state, char const *key,
                         char const *value) noexcept;
 void luaX_add_table_str(lua_State *lua_state, char const *key,
-                        char const *value, std::size_t size) noexcept;
+                        std::string_view value) noexcept;
 void luaX_add_table_int(lua_State *lua_state, char const *key,
                         int64_t value) noexcept;
 void luaX_add_table_num(lua_State *lua_state, char const *key,
@@ -35,16 +39,20 @@ void luaX_add_table_bool(lua_State *lua_state, char const *key,
 void luaX_add_table_func(lua_State *lua_state, char const *key,
                          lua_CFunction func) noexcept;
 
+void luaX_set_up_metatable(
+    lua_State *lua_state, char const *name, char const *luaclass,
+    std::initializer_list<std::pair<char const *, lua_CFunction>> map);
+
 template <typename COLLECTION, typename FUNC>
 void luaX_add_table_array(lua_State *lua_state, char const *key,
-                          COLLECTION const &collection, FUNC &&func)
+                          COLLECTION const &collection, FUNC const &func)
 {
     lua_pushstring(lua_state, key);
     lua_createtable(lua_state, (int)collection.size(), 0);
     int n = 0;
     for (auto const &member : collection) {
         lua_pushinteger(lua_state, ++n);
-        std::forward<FUNC>(func)(member);
+        func(member);
         lua_rawset(lua_state, -3);
     }
     lua_rawset(lua_state, -3);
@@ -60,6 +68,11 @@ char const *luaX_get_table_string(lua_State *lua_state, char const *key,
 uint32_t luaX_get_table_optional_uint32(lua_State *lua_state, char const *key,
                                         int table_index, char const *error_msg,
                                         uint32_t min, uint32_t max,
+                                        char const *range);
+
+uint64_t luaX_get_table_optional_uint64(lua_State *lua_state, char const *key,
+                                        int table_index, char const *error_msg,
+                                        uint64_t min, uint64_t max,
                                         char const *range);
 
 bool luaX_get_table_bool(lua_State *lua_state, char const *key, int table_index,
@@ -96,7 +109,7 @@ bool luaX_is_array(lua_State *lua_state);
  * \post Stack is unchanged.
  */
 template <typename FUNC>
-void luaX_for_each(lua_State *lua_state, FUNC &&func)
+void luaX_for_each(lua_State *lua_state, FUNC const &func)
 {
     assert(lua_istable(lua_state, -1));
     lua_pushnil(lua_state);
@@ -104,7 +117,7 @@ void luaX_for_each(lua_State *lua_state, FUNC &&func)
 #ifndef NDEBUG
         int const top = lua_gettop(lua_state);
 #endif
-        std::forward<FUNC>(func)();
+        func();
         assert(top == lua_gettop(lua_state));
         lua_pop(lua_state, 1);
     }

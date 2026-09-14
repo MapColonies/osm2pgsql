@@ -6,7 +6,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -23,12 +23,13 @@
 #include "tagtransform.hpp"
 
 #include <array>
+#include <cstdint>
 #include <memory>
 
 class output_pgsql_t : public output_t
 {
 public:
-    enum table_id
+    enum table_id : std::uint8_t
     {
         t_point = 0,
         t_line,
@@ -76,11 +77,9 @@ public:
     void way_modify(osmium::Way *way) override;
     void relation_modify(osmium::Relation const &rel) override;
 
-    void node_delete(osmid_t id) override;
-    void way_delete(osmid_t id) override;
-    void relation_delete(osmid_t id) override;
-
-    void merge_expire_trees(output_t *other) override;
+    void node_delete(osmium::Node const &node) override;
+    void way_delete(osmium::Way *way) override;
+    void relation_delete(osmium::Relation const &rel) override;
 
 private:
     void pgsql_out_way(osmium::Way const &way, taglist_t *tags, bool polygon,
@@ -100,15 +99,19 @@ private:
 
     //enable output of a generated way_area tag to either hstore or its own column
     bool m_enable_way_area;
+    // handle objects without tags as if they were not there
+    bool m_ignore_untagged_objects;
 
     std::array<std::unique_ptr<table_t>, t_MAX> m_tables;
 
-    std::shared_ptr<reprojection> m_proj;
+    std::shared_ptr<reprojection_t> m_proj;
     expire_config_t m_expire_config;
-    expire_tiles m_expire;
+    expire_output_t m_expire_output;
+    expire_tiles_t m_expire;
 
     osmium::memory::Buffer m_buffer;
     osmium::memory::Buffer m_rels_buffer;
+    osmium::memory::Buffer m_area_buffer;
 };
 
 #endif // OSM2PGSQL_OUTPUT_PGSQL_HPP

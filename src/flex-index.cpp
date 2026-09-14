@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -30,7 +30,13 @@ flex_index_t::create_index(std::string const &qualified_table_name) const
         joiner.add("UNIQUE");
     }
 
-    joiner.add("INDEX ON");
+    joiner.add("INDEX");
+
+    if (!m_name.empty()) {
+        joiner.add(fmt::format(R"("{}")", m_name));
+    }
+
+    joiner.add("ON");
     joiner.add(qualified_table_name);
 
     joiner.add("USING");

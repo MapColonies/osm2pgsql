@@ -3,11 +3,13 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "node-locations.hpp"
+
+#include "logging.hpp"
 
 // Workaround: This must be included before buffer_string.hpp due to a missing
 // include in the upstream code. https://github.com/mapbox/protozero/pull/104
@@ -62,7 +64,7 @@ osmium::Location node_locations_t::get(osmid_t id) const
     osmium::DeltaDecode<int64_t> dx;
     osmium::DeltaDecode<int64_t> dy;
 
-    for (std::size_t n = 0; n < block_size && begin != end; ++n) {
+    for (std::size_t n = 0; n < BLOCK_SIZE && begin != end; ++n) {
         auto const bid = did.update(
             static_cast<int64_t>(protozero::decode_varint(&begin, end)));
         auto const x = static_cast<int32_t>(dx.update(
@@ -77,6 +79,17 @@ osmium::Location node_locations_t::get(osmid_t id) const
         }
     }
     return osmium::Location{};
+}
+
+void node_locations_t::log_stats()
+{
+    constexpr auto MBYTE = 1024 * 1024;
+    log_debug("Node locations cache:");
+    log_debug("  num locations stored: {}", m_count);
+    log_debug("  bytes overall: {}MB", used_memory() / MBYTE);
+    log_debug("  data capacity: {}MB", m_data.capacity() / MBYTE);
+    log_debug("  data size: {}MB", m_data.size() / MBYTE);
+    log_debug("  index used memory: {}MB", m_index.used_memory() / MBYTE);
 }
 
 void node_locations_t::clear()

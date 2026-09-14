@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -26,11 +26,13 @@ TEST_CASE("multipolygon geometry with single outer, no inner", "[NoDB]")
         geom::polygon_t{geom::ring_t{{0, 0}, {0, 1}, {1, 1}, {1, 0}, {0, 0}}});
 
     REQUIRE(geometry_type(geom) == "MULTIPOLYGON");
+    REQUIRE(geom.n_points() == 5);
     REQUIRE(dimension(geom) == 2);
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(1.0));
-    REQUIRE(spherical_area(geom) == Approx(12364031798.5));
+    REQUIRE(spherical_area(geom) == Approx(12308778361.469454).epsilon(0.00001));
     REQUIRE(length(geom) == Approx(0.0));
+    REQUIRE(spherical_length(geom) == Approx(0.0));
     REQUIRE(centroid(geom) == geom::geometry_t{geom::point_t{0.5, 0.5}});
     REQUIRE(geometry_n(geom, 1) ==
             geom::geometry_t{geom::polygon_t{
@@ -56,10 +58,11 @@ TEST_CASE("multipolygon geometry with two polygons", "[NoDB]")
     mp.add_geometry(std::move(polygon));
 
     REQUIRE(geometry_type(geom) == "MULTIPOLYGON");
+    REQUIRE(geom.n_points() == 15);
     REQUIRE(dimension(geom) == 2);
     REQUIRE(num_geometries(geom) == 2);
     REQUIRE(area(geom) == Approx(9.0));
-    REQUIRE(spherical_area(geom) == Approx(111106540105.7));
+    REQUIRE(spherical_area(geom) == Approx(110615268622.783).epsilon(0.00001));
     REQUIRE(length(geom) == Approx(0.0));
 }
 
@@ -70,10 +73,13 @@ TEST_CASE("create_multipolygon creates simple polygon from OSM data", "[NoDB]")
     buffer.add_way("w21 Nn4x1y2,n1x1y1");
     auto const &relation = buffer.add_relation("r30 Mw20@,w21@");
 
-    auto const geom = geom::create_multipolygon(relation, buffer.buffer());
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_multipolygon(relation, buffer.buffer(), &area_buffer);
 
     REQUIRE(geom.is_polygon());
     REQUIRE(geometry_type(geom) == "POLYGON");
+    REQUIRE(geom.n_points() == 5);
     REQUIRE(dimension(geom) == 2);
     REQUIRE(num_geometries(geom) == 1);
     REQUIRE(area(geom) == Approx(1.0));
@@ -92,9 +98,12 @@ TEST_CASE("create_multipolygon from OSM data", "[NoDB]")
     buffer.add_way("w22 Nn5x10y10,n6x10y20,n7x20y20,n5x10y10");
     auto const &relation = buffer.add_relation("r30 Mw20@,w21@,w22@");
 
-    auto const geom = geom::create_multipolygon(relation, buffer.buffer());
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_multipolygon(relation, buffer.buffer(), &area_buffer);
 
     REQUIRE(geom.is_multipolygon());
+    REQUIRE(geom.n_points() == 9);
     REQUIRE(geometry_type(geom) == "MULTIPOLYGON");
     REQUIRE(num_geometries(geom) == 2);
     REQUIRE(area(geom) == Approx(51.0));
@@ -107,7 +116,9 @@ TEST_CASE("create_multipolygon from OSM data without locations", "[NoDB]")
     buffer.add_way("w20 Nn1,n2,n3,n1");
 
     auto const &relation = buffer.add_relation("r30 Mw20@");
-    auto const geom = geom::create_multipolygon(relation, buffer.buffer());
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_multipolygon(relation, buffer.buffer(), &area_buffer);
 
     REQUIRE(geom.is_null());
 }
@@ -118,7 +129,9 @@ TEST_CASE("create_multipolygon from invalid OSM data (single node)", "[NoDB]")
     buffer.add_way("w20 Nn1x1y1");
 
     auto const &relation = buffer.add_relation("r30 Mw20@");
-    auto const geom = geom::create_multipolygon(relation, buffer.buffer());
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_multipolygon(relation, buffer.buffer(), &area_buffer);
 
     REQUIRE(geom.is_null());
 }
@@ -130,7 +143,9 @@ TEST_CASE("create_multipolygon from invalid OSM data (way node closed)",
     buffer.add_way("w20 Nn1x1y1,n2x2y2");
 
     auto const &relation = buffer.add_relation("r30 Mw20@");
-    auto const geom = geom::create_multipolygon(relation, buffer.buffer());
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_multipolygon(relation, buffer.buffer(), &area_buffer);
 
     REQUIRE(geom.is_null());
 }
@@ -143,7 +158,9 @@ TEST_CASE("create_multipolygon from invalid OSM data (self-intersection)",
     buffer.add_way("w21 Nn4x2y2,n1x1y1");
 
     auto const &relation = buffer.add_relation("r30 Mw20@,w21@");
-    auto const geom = geom::create_multipolygon(relation, buffer.buffer());
+    osmium::memory::Buffer area_buffer{1024};
+    auto const geom =
+        geom::create_multipolygon(relation, buffer.buffer(), &area_buffer);
 
     REQUIRE(geom.is_null());
 }

@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -12,13 +12,17 @@
 #include "common-import.hpp"
 #include "common-options.hpp"
 
-static testing::db::import_t db;
+namespace {
 
-static char const *const conf_file = "test_output_flex_relations.lua";
+testing::db::import_t db;
+
+char const *const CONF_FILE = "test_output_flex_relations.lua";
+
+} // anonymous namespace
 
 TEST_CASE("add relations")
 {
-    options_t options = testing::opt_t().slim().flex(conf_file);
+    options_t options = testing::opt_t().slim().flex(CONF_FILE);
 
     REQUIRE_NOTHROW(db.run_import(options, "r30 v1 dV\n"
                                            "r31 v1 dV Tt1=yes\n"
@@ -49,7 +53,7 @@ TEST_CASE("add relations")
 
 TEST_CASE("change relations")
 {
-    options_t options = testing::opt_t().slim().flex(conf_file);
+    options_t options = testing::opt_t().slim().flex(CONF_FILE);
 
     REQUIRE_NOTHROW(db.run_import(options, "r30 v1 dV\n"
                                            "r31 v1 dV Tt1=yes\n"
@@ -123,7 +127,7 @@ TEST_CASE("change relations")
 
 TEST_CASE("delete relation")
 {
-    options_t options = testing::opt_t().slim().flex(conf_file);
+    options_t options = testing::opt_t().slim().flex(CONF_FILE);
 
     REQUIRE_NOTHROW(db.run_import(options, "r30 v1 dV\n"
                                            "r31 v1 dV Tt1=yes\n"

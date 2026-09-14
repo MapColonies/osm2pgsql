@@ -3,7 +3,7 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
@@ -16,14 +16,19 @@
 #include "command-line-parser.hpp"
 #include "reprojection.hpp"
 
-static testing::db::import_t db;
+namespace {
+
+testing::db::import_t db;
+
+} // anonymous namespace
 
 TEST_CASE("Projection setup")
 {
-    char const* const style_file = OSM2PGSQLDATA_DIR "default.style";
+    char const *const style_file = OSM2PGSQLDATA_DIR "default.style";
 
-    std::vector<char const *> option_params = {"osm2pgsql", "-S", style_file,
-                                               "--number-processes", "1"};
+    std::vector<char const *> option_params = {"osm2pgsql", "--output=pgsql",
+                                               "-S", style_file,
+                                               "--number-processes=1"};
 
     std::string proj_name;
     char const *srid = "";

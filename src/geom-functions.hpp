@@ -6,13 +6,15 @@
  *
  * This file is part of osm2pgsql (https://osm2pgsql.org/).
  *
- * Copyright (C) 2006-2023 by the osm2pgsql developer community.
+ * Copyright (C) 2006-2026 by the osm2pgsql developer community.
  * For a full list of authors see the git log.
  */
 
 #include "geom.hpp"
 #include "reprojection.hpp"
 
+#include <cassert>
+#include <cstddef>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -41,13 +43,13 @@ point_t interpolate(point_t p1, point_t p2, double frac) noexcept;
  * \pre \code !list.empty() \endcode
  */
 template <typename FUNC>
-void for_each_segment(point_list_t const &list, FUNC &&func)
+void for_each_segment(point_list_t const &list, FUNC const &func)
 {
     assert(!list.empty());
     auto it = list.cbegin();
     auto prev = it;
     for (++it; it != list.cend(); ++it) {
-        std::forward<FUNC>(func)(*prev, *it);
+        func(*prev, *it);
         prev = it;
     }
 }
@@ -98,7 +100,7 @@ geometry_t geometry_n(geometry_t const &input, std::size_t n);
  * \pre \code geom.srid() == 4326 \endcode
  */
 void transform(geometry_t *output, geometry_t const &input,
-               reprojection const &reprojection);
+               reprojection_t const &reprojection);
 
 /**
  * Transform a geometry in 4326 into some other projection.
@@ -109,7 +111,8 @@ void transform(geometry_t *output, geometry_t const &input,
  *
  * \pre \code geom.srid() == 4326 \endcode
  */
-geometry_t transform(geometry_t const &input, reprojection const &reprojection);
+geometry_t transform(geometry_t const &input,
+                     reprojection_t const &reprojection);
 
 /**
  * Returns a modified geometry having no segment longer than the given
@@ -157,6 +160,17 @@ double area(geometry_t const &geom);
  * \pre \code geom.srid() == 4326 \endcode
  */
 double spherical_area(geometry_t const &geom);
+
+/**
+ * Calculate length of geometry on the spheroid.
+ * For geometry types other than linestring or multilinestring this will always
+ * return 0.
+ *
+ * \param geom Input geometry.
+ * \returns Length in m.
+ * \pre \code geom.srid() == 4326 \endcode
+ */
+double spherical_length(geometry_t const &geom);
 
 /**
  * Split multigeometries into their parts. Non-multi geometries are left
