@@ -20,13 +20,18 @@
 
 void db_deleter_by_id_t::delete_rows(std::string const &table,
                                      std::string const &column,
+                                     std::string const &history,
                                      pg_conn_t const &db_connection)
 {
     fmt::memory_buffer sql;
     // Each deletable contributes an OSM ID and a comma. The highest node ID
     // currently has 10 digits, so 15 characters should do for a couple of years.
     // Add 50 characters for the SQL statement itself.
-    sql.reserve(m_deletables.size() * 15 + 50);
+    sql.reserve(m_deletables.size() * 15 + 50 + history.size() * 2);
+
+    if (!history.empty()) {
+        fmt::format_to(std::back_inserter(sql), FMT_STRING("WITH d AS ("));
+    }
 
     fmt::format_to(std::back_inserter(sql),
                    FMT_STRING("DELETE FROM {} WHERE {} IN ("), table, column);
@@ -36,12 +41,20 @@ void db_deleter_by_id_t::delete_rows(std::string const &table,
     }
     sql[sql.size() - 1] = ')';
 
+    if (!history.empty()) {
+        fmt::format_to(
+            std::back_inserter(sql),
+            FMT_STRING(" RETURNING *) INSERT INTO {} SELECT d.*, now() FROM d"),
+            history);
+    }
+
     sql.push_back('\0');
     db_connection.exec(sql.data());
 }
 
 void db_deleter_by_type_and_id_t::delete_rows(std::string const &table,
                                               std::string const &column,
+                                              std::string const &history,
                                               pg_conn_t const &db_connection)
 {
     assert(!m_deletables.empty());
@@ -50,7 +63,11 @@ void db_deleter_by_type_and_id_t::delete_rows(std::string const &table,
     // Need a VALUES line for each deletable: type (3 bytes), id (15 bytes),
     // braces etc. (4 bytes). And additional space for the remainder of the
     // SQL command.
-    sql.reserve(m_deletables.size() * 22 + 200);
+    sql.reserve(m_deletables.size() * 22 + 200 + history.size() * 2);
+
+    if (!history.empty()) {
+        fmt::format_to(std::back_inserter(sql), FMT_STRING("WITH d AS ("));
+    }
 
     if (m_has_type) {
         fmt::format_to(std::back_inserter(sql),
@@ -71,6 +88,13 @@ void db_deleter_by_type_and_id_t::delete_rows(std::string const &table,
                        ") AS t (osm_type, osm_id) WHERE"
                        " p.{} = t.osm_type::char(1) AND p.{} = t.osm_id",
                        type, column.c_str() + pos + 1);
+
+        if (!history.empty()) {
+            fmt::format_to(std::back_inserter(sql),
+                           FMT_STRING(" RETURNING p.*) INSERT INTO {}"
+                                      " SELECT d.*, now() FROM d"),
+                           history);
+        }
     } else {
         fmt::format_to(std::back_inserter(sql),
                        FMT_STRING("DELETE FROM {} WHERE {} IN ("), table,
@@ -80,6 +104,13 @@ void db_deleter_by_type_and_id_t::delete_rows(std::string const &table,
             format_to(std::back_inserter(sql), FMT_STRING("{},"), item.osm_id);
         }
         sql[sql.size() - 1] = ')';
+
+        if (!history.empty()) {
+            fmt::format_to(std::back_inserter(sql),
+                           FMT_STRING(" RETURNING *) INSERT INTO {}"
+                                      " SELECT d.*, now() FROM d"),
+                           history);
+        }
     }
 
     sql.push_back('\0');

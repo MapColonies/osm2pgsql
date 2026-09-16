@@ -302,6 +302,9 @@ public:
           table->build_sql_column_list())),
       m_copy_mgr(copy_thread)
     {
+        if (table->has_history()) {
+            m_target->set_history(table->full_history_name());
+        }
     }
 
     void start(pg_conn_t const &db_connection, bool append) const;
