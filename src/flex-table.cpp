@@ -60,6 +60,11 @@ std::string flex_table_t::full_name() const
     return qualified_name(schema(), name());
 }
 
+std::string flex_table_t::full_history_name() const
+{
+    return qualified_name(schema(), history_name());
+}
+
 std::string flex_table_t::full_tmp_name() const
 {
     return qualified_name(schema(), name() + "_tmp");
@@ -207,6 +212,27 @@ flex_table_t::build_sql_create_table(table_type ttype,
     return sql;
 }
 
+std::string flex_table_t::build_sql_create_history_table() const
+{
+    assert(!m_columns.empty());
+    assert(m_has_history);
+
+    std::string sql =
+        fmt::format("CREATE TABLE IF NOT EXISTS {} (", full_history_name());
+
+    util::string_joiner_t joiner{','};
+    for (auto const &column : m_columns) {
+        joiner.add(column.sql_create());
+    }
+    joiner.add(R"("valid_to" timestamptz)");
+
+    sql += joiner();
+    sql += ')';
+    sql += tablespace_clause(m_data_tablespace);
+
+    return sql;
+}
+
 std::string flex_table_t::build_sql_column_list() const
 {
     assert(!m_columns.empty());
@@ -313,6 +339,10 @@ void table_connection_t::start(pg_conn_t const &db_connection,
             table().full_name()));
 
         enable_check_trigger(db_connection, table());
+    }
+
+    if (table().has_history()) {
+        db_connection.exec(table().build_sql_create_history_table());
     }
 
     table().prepare(db_connection);

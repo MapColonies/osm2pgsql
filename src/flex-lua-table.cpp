@@ -446,6 +446,37 @@ TRAMPOLINE_WRAPPED_OBJECT(table, schema)
 
 } // anonymous namespace
 
+void setup_flex_table_history(lua_State *lua_state, flex_table_t *table)
+{
+    assert(lua_state);
+    assert(table);
+
+    lua_getfield(lua_state, -1, "history");
+    if (lua_isboolean(lua_state, -1)) {
+        table->set_has_history(lua_toboolean(lua_state, -1));
+    } else if (!lua_isnil(lua_state, -1)) {
+        throw fmt_error("The 'history' field in table '{}' must be a boolean.",
+                        table->name());
+    }
+    lua_pop(lua_state, 1);
+
+    if (!table->has_history()) {
+        return;
+    }
+
+    for (char const *name : {"valid_from", "valid_to"}) {
+        if (util::find_by_name(table->columns(), name)) {
+            throw fmt_error(
+                "Table '{}' has history enabled, so column '{}' is added by"
+                " osm2pgsql and must not be defined in the Lua config.",
+                table->name(), name);
+        }
+    }
+
+    table->add_column("valid_from", "timestamptz", "timestamptz DEFAULT now()")
+        .set_create_only();
+}
+
 int setup_flex_table(lua_State *lua_state, std::vector<flex_table_t> *tables,
                      std::vector<expire_output_t> *expire_outputs,
                      std::string const &default_schema, bool updatable,
@@ -461,6 +492,7 @@ int setup_flex_table(lua_State *lua_state, std::vector<flex_table_t> *tables,
     setup_flex_table_columns(lua_state, &new_table, expire_outputs,
                              append_mode);
     setup_flex_table_indexes(lua_state, &new_table, updatable);
+    setup_flex_table_history(lua_state, &new_table);
 
     void *ptr = lua_newuserdata(lua_state, sizeof(std::size_t));
     auto *num = new (ptr) std::size_t{};
