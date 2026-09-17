@@ -339,10 +339,10 @@ void table_connection_t::start(pg_conn_t const &db_connection,
             table().full_name()));
 
         enable_check_trigger(db_connection, table());
-    }
 
-    if (table().has_history()) {
-        db_connection.exec(table().build_sql_create_history_table());
+        if (table().has_history()) {
+            db_connection.exec(table().build_sql_create_history_table());
+        }
     }
 
     table().prepare(db_connection);
