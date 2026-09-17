@@ -233,6 +233,42 @@ std::string flex_table_t::build_sql_create_history_table() const
     return sql;
 }
 
+std::string flex_table_t::build_sql_dedup_history() const
+{
+    assert(m_has_history);
+
+    std::string match;
+    util::string_joiner_t hist{','};
+    util::string_joiner_t live{','};
+
+    for (auto const &column : m_columns) {
+        if (column.type() == table_column_type::id_type ||
+            column.type() == table_column_type::id_num) {
+            if (!match.empty()) {
+                match += " AND ";
+            }
+            match += fmt::format(R"(h."{0}" = b."{0}")", column.name());
+            continue;
+        }
+        if (column.create_only()) {
+            continue;
+        }
+        hist.add(fmt::format(R"(h."{}")", column.name()));
+        live.add(fmt::format(R"(b."{}")", column.name()));
+    }
+
+    if (match.empty() || hist.empty()) {
+        return {};
+    }
+
+    return fmt::format(
+        R"(DELETE FROM {} h USING {} b WHERE {})"
+        R"( AND h."valid_to" = (SELECT max("valid_to") FROM {}))"
+        R"( AND ROW({}) IS NOT DISTINCT FROM ROW({}))",
+        full_history_name(), full_name(), match, full_history_name(), hist(),
+        live());
+}
+
 std::string flex_table_t::build_sql_column_list() const
 {
     assert(!m_columns.empty());
@@ -354,6 +390,12 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
     m_copy_mgr.sync();
 
     if (append) {
+        if (table().has_history() && table().has_id_column()) {
+            auto const sql = table().build_sql_dedup_history();
+            if (!sql.empty()) {
+                db_connection.exec(sql);
+            }
+        }
         return;
     }
 

@@ -183,6 +183,8 @@ public:
 
     std::string build_sql_create_history_table() const;
 
+    std::string build_sql_dedup_history() const;
+
     bool has_multiple_geom_columns() const noexcept
     {
         return m_has_multiple_geom_columns;
