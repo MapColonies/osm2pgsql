@@ -1315,7 +1315,7 @@ output_flex_t::output_flex_t(output_flex_t const *other,
     for (auto &expire_output : *m_expire_outputs) {
         m_expire_tiles.emplace_back(
             expire_output.maxzoom(),
-            reprojection_t::create_projection(PROJ_SPHERE_MERC),
+            reprojection_t::create_projection(expire_output.srid()),
             expire_output.max_tiles_geometry());
     }
 }
@@ -1358,17 +1358,30 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
         eo.set_minzoom(options.expire_tiles_zoom_min);
         eo.set_maxzoom(options.expire_tiles_zoom);
 
+        flex_table_t const *srid_table = nullptr;
         for (auto &table : *m_tables) {
-            if (table.has_geom_column() &&
-                table.geom_column().srid() == PROJ_SPHERE_MERC) {
-                expire_config_t config{};
-                config.expire_output = m_expire_outputs->size() - 1;
-                if (options.expire_tiles_max_bbox > 0.0) {
-                    config.mode = expire_mode::hybrid;
-                    config.full_area_limit = options.expire_tiles_max_bbox;
-                }
-                table.geom_column().add_expire(config);
+            if (!table.has_geom_column()) {
+                continue;
             }
+            auto const srid = table.geom_column().srid();
+            if (!srid_table) {
+                srid_table = &table;
+                eo.set_srid(srid);
+            } else if (srid != eo.srid()) {
+                throw fmt_error(
+                    "Tile expiry needs all tables with a geometry column to use"
+                    " the same projection, but table '{}' uses SRID {} and"
+                    " table '{}' uses SRID {}.",
+                    srid_table->name(), eo.srid(), table.name(), srid);
+            }
+
+            expire_config_t config{};
+            config.expire_output = m_expire_outputs->size() - 1;
+            if (options.expire_tiles_max_bbox > 0.0) {
+                config.mode = expire_mode::hybrid;
+                config.full_area_limit = options.expire_tiles_max_bbox;
+            }
+            table.geom_column().add_expire(config);
         }
     }
 
@@ -1382,7 +1395,7 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
     for (auto const &expire_output : *m_expire_outputs) {
         m_expire_tiles.emplace_back(
             expire_output.maxzoom(),
-            reprojection_t::create_projection(PROJ_SPHERE_MERC),
+            reprojection_t::create_projection(expire_output.srid()),
             expire_output.max_tiles_geometry());
     }
 
