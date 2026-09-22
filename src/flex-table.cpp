@@ -233,6 +233,74 @@ std::string flex_table_t::build_sql_create_history_table() const
     return sql;
 }
 
+bool flex_table_t::has_derived_z_column() const noexcept
+{
+    return std::any_of(m_columns.cbegin(), m_columns.cend(), [](auto const &c) {
+        return !c.derive_z_from().empty();
+    });
+}
+
+std::string flex_table_t::build_sql_derive_z(std::size_t batch_size) const
+{
+    auto const column = std::find_if(
+        m_columns.cbegin(), m_columns.cend(),
+        [](auto const &c) { return !c.derive_z_from().empty(); });
+    if (column == m_columns.cend()) {
+        return {};
+    }
+
+    std::string id_column;
+    for (auto const &c : m_columns) {
+        if (c.type() == table_column_type::id_num) {
+            id_column = c.name();
+        }
+    }
+    if (id_column.empty()) {
+        throw fmt_error("Table '{}' derives a Z column, so it needs an id"
+                        " column to join the middle tables on.",
+                        m_name);
+    }
+
+    auto const middle = [&](char const *what) {
+        return qualified_name(m_middle_schema,
+                              fmt::format("{}_{}", m_middle_prefix, what));
+    };
+
+    // lat/lon are int4 at 100-nanodegree scale, and the generator writes the
+    // full-precision values into tags when it has them.
+    auto const point = fmt::format(
+        R"(ST_MakePoint()"
+        R"(COALESCE((n.tags->>'precised_lon')::float8, n.lon::float8/1e7),)"
+        R"(COALESCE((n.tags->>'precised_lat')::float8, n.lat::float8/1e7),)"
+        R"(COALESCE((n.tags->>'{}')::float8, 0)))",
+        column->derive_z_from());
+
+    if (m_id_type == flex_table_index_type::node) {
+        return fmt::format(
+            R"(WITH batch AS (SELECT "{1}" AS id FROM {0} WHERE "{2}" IS NULL LIMIT {5}))"
+            R"( UPDATE {0} l SET "{2}" = ST_SetSRID({3}, {4}))"
+            R"( FROM batch b JOIN {6} n ON n.id = b.id WHERE l."{1}" = b.id)",
+            full_name(), id_column, column->name(), point, column->srid(),
+            batch_size, middle("nodes"));
+    }
+
+    // A way's vertices are joined by node id, not by coordinate, so their
+    // order is preserved and a way revisiting one position at two altitudes
+    // resolves correctly.
+    char const *const wrap =
+        column->type() == table_column_type::polygon ? "ST_MakePolygon(z.g)" : "z.g";
+
+    return fmt::format(
+        R"(WITH batch AS (SELECT "{1}" AS id FROM {0} WHERE "{2}" IS NULL LIMIT {5}),)"
+        R"( z AS (SELECT w.id, ST_SetSRID(ST_MakeLine({3} ORDER BY wn.ord), {4}) AS g)"
+        R"( FROM batch b JOIN {6} w ON w.id = b.id)"
+        R"( CROSS JOIN LATERAL unnest(w.nodes) WITH ORDINALITY AS wn(node_id, ord))"
+        R"( JOIN {7} n ON n.id = wn.node_id GROUP BY w.id))"
+        R"( UPDATE {0} l SET "{2}" = {8} FROM z WHERE l."{1}" = z.id)",
+        full_name(), id_column, column->name(), point, column->srid(),
+        batch_size, middle("ways"), middle("nodes"), wrap);
+}
+
 std::string flex_table_t::build_sql_dedup_history() const
 {
     assert(m_has_history);
@@ -449,8 +517,43 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
         create_id_index(db_connection);
     }
 
+    if (table().has_derived_z_column()) {
+        derive_z(db_connection);
+    }
+
     log_info("Analyzing table '{}'...", table().name());
     table().analyze(db_connection);
+}
+
+void table_connection_t::derive_z(pg_conn_t const &db_connection) const
+{
+    constexpr std::size_t batch_size = 100000;
+
+    // Rows are written with the column left NULL, so NULL is what marks a row
+    // as not yet derived, and the batch is bounded by it. The loop matters on
+    // a create: every row of the table needs filling, which on a real corpus
+    // is a scale the per-diff case never reaches.
+    auto const sql = table().build_sql_derive_z(batch_size);
+    if (sql.empty()) {
+        return;
+    }
+
+    log_info("Deriving Z geometry for table '{}'...", table().name());
+
+    util::timer_t timer;
+    std::size_t total = 0;
+    while (true) {
+        auto const result = db_connection.exec(sql);
+        auto const rows = result.affected_rows();
+        if (rows == 0) {
+            break;
+        }
+        total += rows;
+        log_debug("  derived {} rows (total {})", rows, total);
+    }
+
+    log_info("Derived Z geometry for {} rows in table '{}' ({})", total,
+             table().name(), util::human_readable_duration(timer.stop()));
 }
 
 void table_connection_t::create_id_index(pg_conn_t const &db_connection)

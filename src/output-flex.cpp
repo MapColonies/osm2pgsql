@@ -1389,6 +1389,7 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
     write_table_list_to_debug_log(*m_tables);
 
     for (auto &table : *m_tables) {
+        table.set_middle_tables(options.middle_dbschema, options.prefix);
         m_table_connections.emplace_back(&table, m_copy_thread);
     }
 

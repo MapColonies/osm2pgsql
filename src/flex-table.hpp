@@ -185,6 +185,16 @@ public:
 
     std::string build_sql_dedup_history() const;
 
+    void set_middle_tables(std::string schema, std::string prefix)
+    {
+        m_middle_schema = std::move(schema);
+        m_middle_prefix = std::move(prefix);
+    }
+
+    bool has_derived_z_column() const noexcept;
+
+    std::string build_sql_derive_z(std::size_t batch_size) const;
+
     bool has_multiple_geom_columns() const noexcept
     {
         return m_has_multiple_geom_columns;
@@ -279,6 +289,9 @@ private:
 
     bool m_has_history = false;
 
+    std::string m_middle_schema;
+    std::string m_middle_prefix{"planet_osm"};
+
     /// Always build the id index, not only when it is needed for updates?
     bool m_always_build_id_index = false;
 
@@ -312,6 +325,8 @@ public:
     void start(pg_conn_t const &db_connection, bool append) const;
 
     void stop(pg_conn_t const &db_connection, bool updateable, bool append);
+
+    void derive_z(pg_conn_t const &db_connection) const;
 
     flex_table_t const &table() const noexcept { return *m_table; }
 
