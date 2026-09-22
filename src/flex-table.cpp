@@ -261,6 +261,17 @@ std::string flex_table_t::build_sql_derive_z(std::size_t batch_size) const
                         m_name);
     }
 
+    // The derived column carries its CRS inside sql_type, which osm2pgsql
+    // passes through without reading, so the column's own srid is still the
+    // default. It is the three-dimensional twin of the table's geometry and
+    // has to share its CRS, so that is what the SQL names.
+    if (!has_geom_column()) {
+        throw fmt_error("Table '{}' derives a Z column but has no geometry"
+                        " column to take a projection from.",
+                        m_name);
+    }
+    int const srid = geom_column().srid();
+
     auto const middle = [&](char const *what) {
         return qualified_name(m_middle_schema,
                               fmt::format("{}_{}", m_middle_prefix, what));
@@ -280,15 +291,21 @@ std::string flex_table_t::build_sql_derive_z(std::size_t batch_size) const
             R"(WITH batch AS (SELECT "{1}" AS id FROM {0} WHERE "{2}" IS NULL LIMIT {5}))"
             R"( UPDATE {0} l SET "{2}" = ST_SetSRID({3}, {4}))"
             R"( FROM batch b JOIN {6} n ON n.id = b.id WHERE l."{1}" = b.id)",
-            full_name(), id_column, column->name(), point, column->srid(),
-            batch_size, middle("nodes"));
+            full_name(), id_column, column->name(), point, srid, batch_size,
+            middle("nodes"));
     }
 
     // A way's vertices are joined by node id, not by coordinate, so their
     // order is preserved and a way revisiting one position at two altitudes
     // resolves correctly.
+    // Same reason as the srid: the derived column's declared type is not the
+    // geometry type — that lives inside sql_type, which osm2pgsql does not
+    // read. The table's own geometry says whether the ring has to be closed.
     char const *const wrap =
-        column->type() == table_column_type::polygon ? "ST_MakePolygon(z.g)" : "z.g";
+        geom_column().type() == table_column_type::polygon ||
+                geom_column().type() == table_column_type::multipolygon
+            ? "ST_MakePolygon(z.g)"
+            : "z.g";
 
     return fmt::format(
         R"(WITH batch AS (SELECT "{1}" AS id FROM {0} WHERE "{2}" IS NULL LIMIT {5}),)"
@@ -297,8 +314,8 @@ std::string flex_table_t::build_sql_derive_z(std::size_t batch_size) const
         R"( CROSS JOIN LATERAL unnest(w.nodes) WITH ORDINALITY AS wn(node_id, ord))"
         R"( JOIN {7} n ON n.id = wn.node_id GROUP BY w.id))"
         R"( UPDATE {0} l SET "{2}" = {8} FROM z WHERE l."{1}" = z.id)",
-        full_name(), id_column, column->name(), point, column->srid(),
-        batch_size, middle("ways"), middle("nodes"), wrap);
+        full_name(), id_column, column->name(), point, srid, batch_size,
+        middle("ways"), middle("nodes"), wrap);
 }
 
 std::string flex_table_t::build_sql_dedup_history() const
