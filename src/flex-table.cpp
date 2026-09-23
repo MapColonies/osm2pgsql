@@ -288,7 +288,8 @@ std::string flex_table_t::build_sql_derive_z(std::size_t batch_size) const
 
     if (m_id_type == flex_table_index_type::node) {
         return fmt::format(
-            R"(WITH batch AS (SELECT "{1}" AS id FROM {0} WHERE "{2}" IS NULL LIMIT {5}))"
+            R"(WITH batch AS (SELECT "{1}" AS id FROM {0})"
+            R"( WHERE ST_ZMax("{2}") = 0 AND ST_ZMin("{2}") = 0 LIMIT {5}))"
             R"( UPDATE {0} l SET "{2}" = ST_SetSRID({3}, {4}))"
             R"( FROM batch b JOIN {6} n ON n.id = b.id WHERE l."{1}" = b.id)",
             full_name(), id_column, column->name(), point, srid, batch_size,
@@ -308,7 +309,8 @@ std::string flex_table_t::build_sql_derive_z(std::size_t batch_size) const
             : "z.g";
 
     return fmt::format(
-        R"(WITH batch AS (SELECT "{1}" AS id FROM {0} WHERE "{2}" IS NULL LIMIT {5}),)"
+        R"(WITH batch AS (SELECT "{1}" AS id FROM {0})"
+        R"( WHERE ST_ZMax("{2}") = 0 AND ST_ZMin("{2}") = 0 LIMIT {5}),)"
         R"( z AS (SELECT w.id, ST_SetSRID(ST_MakeLine({3} ORDER BY wn.ord), {4}) AS g)"
         R"( FROM batch b JOIN {6} w ON w.id = b.id)"
         R"( CROSS JOIN LATERAL unnest(w.nodes) WITH ORDINALITY AS wn(node_id, ord))"
@@ -481,6 +483,9 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
                 db_connection.exec(sql);
             }
         }
+        if (table().has_derived_z_column()) {
+            derive_z(db_connection);
+        }
         return;
     }
 
@@ -546,10 +551,6 @@ void table_connection_t::derive_z(pg_conn_t const &db_connection) const
 {
     constexpr std::size_t batch_size = 100000;
 
-    // Rows are written with the column left NULL, so NULL is what marks a row
-    // as not yet derived, and the batch is bounded by it. The loop matters on
-    // a create: every row of the table needs filling, which on a real corpus
-    // is a scale the per-diff case never reaches.
     auto const sql = table().build_sql_derive_z(batch_size);
     if (sql.empty()) {
         return;

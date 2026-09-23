@@ -370,14 +370,20 @@ void setup_flex_table_columns(lua_State *lua_state, flex_table_t *table,
 
         lua_getfield(lua_state, -1, "derive_z_from");
         if (lua_isstring(lua_state, -1)) {
-            if (!column.create_only()) {
+            if (!column.is_geometry_column()) {
                 throw fmt_error("Column '{}' has 'derive_z_from', so it must"
-                                " also be create_only: osm2pgsql fills it"
-                                " after the import rather than from the"
-                                " object being written.",
+                                " be a geometry column.",
+                                column.name());
+            }
+            if (column.create_only()) {
+                throw fmt_error("Column '{}' has 'derive_z_from', so it must"
+                                " not be create_only: the geometry is written"
+                                " with zero Z and raised afterwards, which a"
+                                " column that is never written cannot be.",
                                 column.name());
             }
             column.set_derive_z_from(lua_tostring(lua_state, -1));
+            column.set_with_z(true);
         } else if (!lua_isnil(lua_state, -1)) {
             throw std::runtime_error{
                 "Entry 'derive_z_from' must be a string (a node tag name)."};

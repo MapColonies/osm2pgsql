@@ -445,12 +445,14 @@ void flex_write_column(lua_State *lua_state, geometry_cache_t *geom_cache,
                      type == table_column_type::multilinestring ||
                      type == table_column_type::multipolygon);
                 if (geom->srid() == column.srid()) {
-                    copy_mgr->add_hex_geom(geom_to_ewkb(*geom, wrap_multi));
+                    copy_mgr->add_hex_geom(
+                        geom_to_ewkb(*geom, wrap_multi, column.with_z()));
                     geom_cache->add_new(&column, *geom);
                 } else {
                     auto const &proj = get_projection(column.srid());
                     auto tgeom = geom::transform(*geom, proj);
-                    copy_mgr->add_hex_geom(geom_to_ewkb(tgeom, wrap_multi));
+                    copy_mgr->add_hex_geom(
+                        geom_to_ewkb(tgeom, wrap_multi, column.with_z()));
                     geom_cache->add_new(&column, std::move(tgeom));
                 }
             } else {

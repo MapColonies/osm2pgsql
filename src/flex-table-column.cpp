@@ -128,6 +128,11 @@ void flex_table_column_t::set_projection(char const *projection)
     }
 }
 
+char const *flex_table_column_t::z_suffix() const noexcept
+{
+    return m_with_z ? "Z" : "";
+}
+
 std::string flex_table_column_t::sql_type_name() const
 {
     if (!m_sql_type.empty()) {
@@ -162,19 +167,20 @@ std::string flex_table_column_t::sql_type_name() const
     case table_column_type::direction:
         return "int2";
     case table_column_type::geometry:
-        return fmt::format("Geometry(GEOMETRY, {})", m_srid);
+        return fmt::format("Geometry(GEOMETRY{}, {})", z_suffix(), m_srid);
     case table_column_type::point:
-        return fmt::format("Geometry(POINT, {})", m_srid);
+        return fmt::format("Geometry(POINT{}, {})", z_suffix(), m_srid);
     case table_column_type::linestring:
-        return fmt::format("Geometry(LINESTRING, {})", m_srid);
+        return fmt::format("Geometry(LINESTRING{}, {})", z_suffix(), m_srid);
     case table_column_type::polygon:
-        return fmt::format("Geometry(POLYGON, {})", m_srid);
+        return fmt::format("Geometry(POLYGON{}, {})", z_suffix(), m_srid);
     case table_column_type::multipoint:
-        return fmt::format("Geometry(MULTIPOINT, {})", m_srid);
+        return fmt::format("Geometry(MULTIPOINT{}, {})", z_suffix(), m_srid);
     case table_column_type::multilinestring:
-        return fmt::format("Geometry(MULTILINESTRING, {})", m_srid);
+        return fmt::format("Geometry(MULTILINESTRING{}, {})", z_suffix(),
+                           m_srid);
     case table_column_type::multipolygon:
-        return fmt::format("Geometry(MULTIPOLYGON, {})", m_srid);
+        return fmt::format("Geometry(MULTIPOLYGON{}, {})", z_suffix(), m_srid);
     case table_column_type::geometrycollection:
         return fmt::format("Geometry(GEOMETRYCOLLECTION, {})", m_srid);
     case table_column_type::id_type:

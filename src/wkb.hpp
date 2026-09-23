@@ -29,7 +29,8 @@
  * \returns String with EWKB encoded geometry
  */
 [[nodiscard]] std::string geom_to_ewkb(geom::geometry_t const &geom,
-                                       bool ensure_multi = false);
+                                       bool ensure_multi = false,
+                                      bool with_z = false);
 
 /**
  * Convert EWKB geometry to geometry object. If the input is empty, a null
