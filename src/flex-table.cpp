@@ -362,6 +362,10 @@ void table_connection_t::start(pg_conn_t const &db_connection,
 {
     if (!append) {
         drop_table_if_exists(db_connection, table().schema(), table().name());
+        if (table().has_history()) {
+            drop_table_if_exists(db_connection, table().schema(),
+                                 table().history_name());
+        }
     }
 
     // These _tmp tables can be left behind if we run out of disk space.
