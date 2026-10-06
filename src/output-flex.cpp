@@ -1368,11 +1368,13 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
                 srid_table = &table;
                 eo.set_srid(srid);
             } else if (srid != eo.srid()) {
-                throw fmt_error(
-                    "Tile expiry needs all tables with a geometry column to use"
-                    " the same projection, but table '{}' uses SRID {} and"
-                    " table '{}' uses SRID {}.",
-                    srid_table->name(), eo.srid(), table.name(), srid);
+                log_warn("Tile expiry uses SRID {} from table '{}', but table"
+                         " '{}' uses SRID {}. Tiles expired for '{}' will be"
+                         " wrong. Give every table with a geometry column the"
+                         " same projection, or give them separate expire"
+                         " outputs.",
+                         eo.srid(), srid_table->name(), table.name(), srid,
+                         table.name());
             }
 
             expire_config_t config{};
