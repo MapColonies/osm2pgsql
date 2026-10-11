@@ -165,6 +165,7 @@ void check_options_output_null(CLI::App const &app)
         return option->get_group() == "Pgsql output options" ||
                option->get_group() == "Expire options" ||
                option->get_name() == "--style" ||
+               option->get_name() == "--history" ||
                option->get_name() == "--disable-parallel-indexing" ||
                option->get_name() == "--number-processes";
     });
@@ -341,6 +342,12 @@ options_t parse_command_line(int argc, char *argv[])
                       "').")
         ->type_name("FILE")
         ->check(CLI::ExistingFile)
+        ->group("Output options");
+
+    // --history
+    app.add_flag("--history", options.history)
+        ->description("Keep history for every flex table that does not set"
+                      " 'history' itself.")
         ->group("Output options");
 
     // ----------------------------------------------------------------------

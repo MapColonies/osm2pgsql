@@ -193,6 +193,12 @@ mandatory for short options too.
     `/usr/share/osm2pgsql/default.style`, for other outputs there is no
     default.)
 
+\--history
+:   Keep history for every **flex** table that has ids and does not set
+    `history` itself. Set `history = false` in a table definition to leave it
+    out. The setting is stored in the database on import and used again on
+    every update, so it does not have to be repeated with **\--append**.
+
 # PGSQL OUTPUT OPTIONS
 
 \--tablespace-main-data=TABLESPC

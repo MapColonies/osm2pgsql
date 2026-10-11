@@ -24,7 +24,7 @@ static char const *const OSM2PGSQL_TABLE_CLASS = "osm2pgsql.Table";
 int setup_flex_table(lua_State *lua_state, std::vector<flex_table_t> *tables,
                      std::vector<expire_output_t> *expire_outputs,
                      std::string const &default_schema, bool updatable,
-                     bool append_mode);
+                     bool append_mode, bool default_history);
 
 class lua_wrapper_table_t : public lua_wrapper_base_t<flex_table_t>
 {

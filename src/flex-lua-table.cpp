@@ -446,7 +446,8 @@ TRAMPOLINE_WRAPPED_OBJECT(table, schema)
 
 } // anonymous namespace
 
-void setup_flex_table_history(lua_State *lua_state, flex_table_t *table)
+void setup_flex_table_history(lua_State *lua_state, flex_table_t *table,
+                              bool default_history)
 {
     assert(lua_state);
     assert(table);
@@ -454,7 +455,9 @@ void setup_flex_table_history(lua_State *lua_state, flex_table_t *table)
     lua_getfield(lua_state, -1, "history");
     if (lua_isboolean(lua_state, -1)) {
         table->set_has_history(lua_toboolean(lua_state, -1));
-    } else if (!lua_isnil(lua_state, -1)) {
+    } else if (lua_isnil(lua_state, -1)) {
+        table->set_has_history(default_history && table->has_id_column());
+    } else {
         throw fmt_error("The 'history' field in table '{}' must be a boolean.",
                         table->name());
     }
@@ -462,6 +465,12 @@ void setup_flex_table_history(lua_State *lua_state, flex_table_t *table)
 
     if (!table->has_history()) {
         return;
+    }
+
+    if (!table->has_id_column()) {
+        throw fmt_error("Table '{}' has history enabled but no ids. History"
+                        " needs ids to find the rows a change replaces.",
+                        table->name());
     }
 
     for (char const *name : {"valid_from", "valid_to"}) {
@@ -480,7 +489,7 @@ void setup_flex_table_history(lua_State *lua_state, flex_table_t *table)
 int setup_flex_table(lua_State *lua_state, std::vector<flex_table_t> *tables,
                      std::vector<expire_output_t> *expire_outputs,
                      std::string const &default_schema, bool updatable,
-                     bool append_mode)
+                     bool append_mode, bool default_history)
 {
     if (lua_type(lua_state, 1) != LUA_TTABLE) {
         throw std::runtime_error{
@@ -492,7 +501,7 @@ int setup_flex_table(lua_State *lua_state, std::vector<flex_table_t> *tables,
     setup_flex_table_columns(lua_state, &new_table, expire_outputs,
                              append_mode);
     setup_flex_table_indexes(lua_state, &new_table, updatable);
-    setup_flex_table_history(lua_state, &new_table);
+    setup_flex_table_history(lua_state, &new_table, default_history);
 
     void *ptr = lua_newuserdata(lua_state, sizeof(std::size_t));
     auto *num = new (ptr) std::size_t{};
