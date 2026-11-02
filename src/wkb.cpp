@@ -454,16 +454,22 @@ private:
             type &= ~ewkb::geometry_type::wkb_srid;
             geom->set_srid(static_cast<int>(parse_uint32()));
         }
+        // Geometries with a Z ordinate (written for derive_z_from columns)
+        // are read as 2D: the Z ordinate is skipped.
+        m_with_z = (type & ewkb::geometry_type::wkb_z) != 0;
+        type &= ~ewkb::geometry_type::wkb_z;
         return type;
     }
 
     void parse_point(geom::point_t *point)
     {
-        check_bytes(sizeof(double) * 2);
+        auto const size =
+            static_cast<uint32_t>(sizeof(double) * (m_with_z ? 3U : 2U));
+        check_bytes(size);
 
         std::array<double, 2> data{};
         std::memcpy(data.data(), m_data.data(), sizeof(double) * 2);
-        m_data.remove_prefix(sizeof(double) * 2);
+        m_data.remove_prefix(size);
 
         point->set_x(data[0]);
         point->set_y(data[1]);
@@ -584,6 +590,7 @@ private:
 
     std::string_view m_data;
     uint32_t m_max_length;
+    bool m_with_z = false;
 
 }; // class ewkb_parser_t
 
