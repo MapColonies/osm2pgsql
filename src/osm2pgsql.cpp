@@ -102,6 +102,7 @@ void check_db(options_t const &options)
 void set_up_properties(properties_t *properties, options_t const &options)
 {
     properties->set_bool("attributes", options.extra_attributes);
+    properties->set_bool("history", options.history);
 
     if (options.flat_node_file.empty()) {
         properties->set_string("flat_node_file", "");
@@ -171,6 +172,25 @@ void check_attributes(properties_t const &properties, options_t *options)
     if (with_attributes) {
         log_info("Updating with attributes (same as on import).");
         options->extra_attributes = true;
+    }
+}
+
+void check_history(properties_t const &properties, options_t *options)
+{
+    bool const with_history = properties.get_bool("history", false);
+
+    if (options->history) {
+        if (!with_history) {
+            throw std::runtime_error{
+                "Can not update with --history because original import was"
+                " without it."};
+        }
+        return;
+    }
+
+    if (with_history) {
+        log_info("Updating with history (same as on import).");
+        options->history = true;
     }
 }
 
@@ -301,6 +321,7 @@ void check_and_update_properties(properties_t *properties, options_t *options)
 {
     check_updatable(*properties);
     check_attributes(*properties, options);
+    check_history(*properties, options);
     check_and_update_flat_node_file(properties, options);
     check_prefix(*properties, options);
     check_db_format(*properties, options);
