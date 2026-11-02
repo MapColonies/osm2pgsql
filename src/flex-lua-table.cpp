@@ -82,6 +82,11 @@ flex_table_t &create_flex_table(lua_State *lua_state,
     }
     lua_pop(lua_state, 1);
 
+    // optional "expire" field
+    new_table.set_expire(
+        luaX_get_table_bool(lua_state, "expire", -1, "The table", true));
+    lua_pop(lua_state, 1); // "expire"
+
     // optional "data_tablespace" field
     lua_getfield(lua_state, -1, "data_tablespace");
     if (lua_isstring(lua_state, -1)) {

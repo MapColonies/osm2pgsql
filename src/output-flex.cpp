@@ -1351,19 +1351,39 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
     }
 
     // For backwards compatibility we add a "default" expire output to all
-    // tables when the relevant command line options are used.
+    // tables when the relevant command line options are used. Each table
+    // also gets an output of its own, written to "<filename>.<table name>",
+    // so consumers can tell which table expired a tile. Tables can opt out
+    // with "expire = false".
     if (options.append && options.expire_tiles_zoom) {
-        auto &eo = m_expire_outputs->emplace_back();
-        eo.set_filename(options.expire_tiles_filename);
-        eo.set_minzoom(options.expire_tiles_zoom_min);
-        eo.set_maxzoom(options.expire_tiles_zoom);
+        auto const add_expire_output = [&](std::string const &filename) {
+            auto &eo = m_expire_outputs->emplace_back();
+            eo.set_filename(filename);
+            eo.set_minzoom(options.expire_tiles_zoom_min);
+            eo.set_maxzoom(options.expire_tiles_zoom);
+            return m_expire_outputs->size() - 1;
+        };
+
+        auto const add_expire = [&](flex_table_t *table, std::size_t output) {
+            expire_config_t config{};
+            config.expire_output = output;
+            if (options.expire_tiles_max_bbox > 0.0) {
+                config.mode = expire_mode::hybrid;
+                config.full_area_limit = options.expire_tiles_max_bbox;
+            }
+            table->geom_column().add_expire(config);
+        };
+
+        auto const all_tables =
+            add_expire_output(options.expire_tiles_filename);
 
         flex_table_t const *srid_table = nullptr;
         for (auto &table : *m_tables) {
-            if (!table.has_geom_column()) {
+            if (!table.has_geom_column() || !table.expire()) {
                 continue;
             }
             auto const srid = table.geom_column().srid();
+            auto &eo = (*m_expire_outputs)[all_tables];
             if (!srid_table) {
                 srid_table = &table;
                 eo.set_srid(srid);
@@ -1376,14 +1396,12 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
                          eo.srid(), srid_table->name(), table.name(), srid,
                          table.name());
             }
+            add_expire(&table, all_tables);
 
-            expire_config_t config{};
-            config.expire_output = m_expire_outputs->size() - 1;
-            if (options.expire_tiles_max_bbox > 0.0) {
-                config.mode = expire_mode::hybrid;
-                config.full_area_limit = options.expire_tiles_max_bbox;
-            }
-            table.geom_column().add_expire(config);
+            auto const own = add_expire_output(options.expire_tiles_filename +
+                                               '.' + table.name());
+            (*m_expire_outputs)[own].set_srid(srid);
+            add_expire(&table, own);
         }
     }
 

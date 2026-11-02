@@ -273,7 +273,9 @@ mandatory for short options too.
 :   Create a tile expiry list.
 
 -o, \--expire-output=FILENAME
-:   Output file name for expired tiles list.
+:   Output file name for expired tiles list. With the flex output, each table
+    with a geometry column also gets its own list in FILENAME.TABLENAME.
+    Tables defined with `expire = false` are left out of both.
 
 \--expire-bbox-size=SIZE
 :   Max size for a polygon to expire the whole polygon, not just the boundary.

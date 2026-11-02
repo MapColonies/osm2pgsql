@@ -99,6 +99,10 @@ public:
         m_cluster_by_geom = cluster;
     }
 
+    bool expire() const noexcept { return m_expire; }
+
+    void set_expire(bool expire) noexcept { m_expire = expire; }
+
     void set_data_tablespace(std::string tablespace) noexcept
     {
         m_data_tablespace = std::move(tablespace);
@@ -262,6 +266,10 @@ private:
 
     /// Cluster the table by geometry.
     bool m_cluster_by_geom = true;
+
+    /// Expire tiles for this table when tile expiry is set on the
+    /// command line.
+    bool m_expire = true;
 
     /// Does this table have more than one geometry column?
     bool m_has_multiple_geom_columns = false;
