@@ -209,7 +209,7 @@ std::string flex_table_column_t::sql_create() const
 void flex_table_column_t::add_expire(expire_config_t const &config)
 {
     assert(is_geometry_column());
-    assert(srid() == PROJ_SPHERE_MERC);
+    assert(srid() > 0);
     m_expires.push_back(config);
 }
 

@@ -10,6 +10,7 @@
  * For a full list of authors see the git log.
  */
 
+#include "projection.hpp"
 #include "tile.hpp"
 
 #include <cassert>
@@ -58,6 +59,9 @@ public:
 
     uint32_t maxzoom() const noexcept { return m_maxzoom; }
     void set_maxzoom(uint32_t maxzoom) noexcept { m_maxzoom = maxzoom; }
+
+    int srid() const noexcept { return m_srid; }
+    void set_srid(int srid) noexcept { m_srid = srid; }
 
     std::size_t max_tiles_geometry() const noexcept
     {
@@ -141,6 +145,8 @@ private:
 
     /// Zoom level we capture tiles on
     uint32_t m_maxzoom = 0;
+
+    int m_srid = PROJ_SPHERE_MERC;
 
     /**
      * The following two settings are for protecting osm2pgsql from overload as

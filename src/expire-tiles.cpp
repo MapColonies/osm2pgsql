@@ -169,10 +169,10 @@ void expire_tiles_t::from_polygon_area(geom::polygon_t const &geom,
 
     // Coordinates are numbered from bottom to top, tiles are numbered from top
     // to bottom, so "min" and "max" are switched here.
-    auto const max_tile_y = static_cast<std::uint32_t>(
-        m_map_width * (0.5 - box.min().y() / tile_t::EARTH_CIRCUMFERENCE));
-    auto const min_tile_y = static_cast<std::uint32_t>(
-        m_map_width * (0.5 - box.max().y() / tile_t::EARTH_CIRCUMFERENCE));
+    auto const max_tile_y =
+        static_cast<std::uint32_t>(coords_to_tile(box.min()).y());
+    auto const min_tile_y =
+        static_cast<std::uint32_t>(coords_to_tile(box.max()).y());
 
     std::vector<uint32_t> tile_x_list;
 
