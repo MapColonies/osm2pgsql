@@ -31,7 +31,7 @@ Feature: Expire with command line options on geometries not in Web Mercator
             entries to expire output [0].
             """
 
-    Scenario: Tables in different projections can not share command line expire
+    Scenario: Tables in different projections sharing command line expire warn
         Given the lua style
             """
             local merc = osm2pgsql.define_node_table('osm2pgsql_test_merc', {
@@ -61,8 +61,8 @@ Feature: Expire with command line options on geometries not in Web Mercator
             """
         When running osm2pgsql flex with parameters
             | --slim | -a | --expire-tiles=12 |
-        Then execution fails
+        Then execution is successful
         And the error output contains
             """
-            Tile expiry needs all tables with a geometry column to use the same projection
+            Tile expiry uses SRID 3857 from table 'osm2pgsql_test_merc'
             """
