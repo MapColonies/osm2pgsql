@@ -34,7 +34,8 @@ enum geometry_type : uint32_t
     wkb_multi_polygon = 6,
     wkb_collection = 7,
 
-    wkb_srid = 0x20000000 // SRID-presence flag (EWKB)
+    wkb_srid = 0x20000000, // SRID-presence flag (EWKB)
+    wkb_z = 0x80000000    // Z-presence flag (EWKB)
 };
 
 enum wkb_byte_order_type_t : uint8_t
@@ -59,14 +60,17 @@ void str_push(std::string *data, T value)
  *
  * \pre \code data != nullptr \endcode
  */
-void write_header(std::string *data, geometry_type type, uint32_t srid)
+void write_header(std::string *data, geometry_type type, uint32_t srid,
+                  bool with_z)
 {
+    uint32_t const flagged =
+        static_cast<uint32_t>(type) | (with_z ? geometry_type::wkb_z : 0U);
     str_push(data, Endian);
     if (srid) {
-        str_push(data, type | geometry_type::wkb_srid);
+        str_push(data, flagged | geometry_type::wkb_srid);
         str_push(data, srid);
     } else {
-        str_push(data, type);
+        str_push(data, flagged);
     }
 }
 
@@ -82,114 +86,125 @@ void write_length(std::string *data, std::size_t length)
     str_push(data, static_cast<uint32_t>(length));
 }
 
-void write_point(std::string *data, geom::point_t const &geom,
+void write_point(std::string *data, geom::point_t const &geom, bool with_z,
                  uint32_t srid = 0)
 {
     assert(data);
 
-    write_header(data, wkb_point, srid);
+    write_header(data, wkb_point, srid, with_z);
     str_push(data, geom.x());
     str_push(data, geom.y());
+    if (with_z) {
+        str_push(data, 0.0);
+    }
 }
 
-void write_points(std::string *data, geom::point_list_t const &points)
+void write_points(std::string *data, geom::point_list_t const &points,
+                  bool with_z)
 {
     write_length(data, points.size());
     for (auto const &point : points) {
         str_push(data, point.x());
         str_push(data, point.y());
+        if (with_z) {
+            str_push(data, 0.0);
+        }
     }
 }
 
 void write_linestring(std::string *data, geom::linestring_t const &geom,
-                      uint32_t srid = 0)
+                      bool with_z, uint32_t srid = 0)
 {
     assert(data);
 
-    write_header(data, wkb_line, srid);
-    write_points(data, geom);
+    write_header(data, wkb_line, srid, with_z);
+    write_points(data, geom, with_z);
 }
 
 void write_polygon(std::string *data, geom::polygon_t const &geom,
-                   uint32_t srid = 0)
+                   bool with_z, uint32_t srid = 0)
 {
     assert(data);
 
-    write_header(data, wkb_polygon, srid);
+    write_header(data, wkb_polygon, srid, with_z);
     write_length(data, geom.inners().size() + 1);
-    write_points(data, geom.outer());
+    write_points(data, geom.outer(), with_z);
     for (auto const &ring : geom.inners()) {
-        write_points(data, ring);
+        write_points(data, ring, with_z);
     }
 }
 
 void write_multipoint(std::string *data, geom::multipoint_t const &geom,
-                      uint32_t srid = 0)
+                      bool with_z, uint32_t srid = 0)
 {
     assert(data);
 
-    write_header(data, wkb_multi_point, srid);
+    write_header(data, wkb_multi_point, srid, with_z);
     write_length(data, geom.num_geometries());
 
     for (auto const &point : geom) {
-        write_point(data, point);
+        write_point(data, point, with_z);
     }
 }
 
 void write_multilinestring(std::string *data,
                            geom::multilinestring_t const &geom,
-                           uint32_t srid = 0)
+                           bool with_z, uint32_t srid = 0)
 {
     assert(data);
 
-    write_header(data, wkb_multi_line, srid);
+    write_header(data, wkb_multi_line, srid, with_z);
     write_length(data, geom.num_geometries());
 
     for (auto const &line : geom) {
-        write_linestring(data, line);
+        write_linestring(data, line, with_z);
     }
 }
 
 void write_multipolygon(std::string *data, geom::multipolygon_t const &geom,
-                        uint32_t srid = 0)
+                        bool with_z, uint32_t srid = 0)
 {
     assert(data);
 
-    write_header(data, wkb_multi_polygon, srid);
+    write_header(data, wkb_multi_polygon, srid, with_z);
     write_length(data, geom.num_geometries());
 
     for (auto const &polygon : geom) {
-        write_polygon(data, polygon);
+        write_polygon(data, polygon, with_z);
     }
 }
 
 void write_collection(std::string *data, geom::collection_t const &geom,
-                      uint32_t srid = 0)
+                      bool with_z, uint32_t srid = 0)
 {
     assert(data);
 
-    write_header(data, wkb_collection, srid);
+    write_header(data, wkb_collection, srid, with_z);
     write_length(data, geom.num_geometries());
 
     for (auto const &item : geom) {
         item.visit(overloaded{
             [](geom::nullgeom_t const & /*input*/) {},
-            [&](geom::point_t const &input) { write_point(data, input); },
-            [&](geom::linestring_t const &input) {
-                write_linestring(data, input);
+            [&](geom::point_t const &input) {
+                write_point(data, input, with_z);
             },
-            [&](geom::polygon_t const &input) { write_polygon(data, input); },
+            [&](geom::linestring_t const &input) {
+                write_linestring(data, input, with_z);
+            },
+            [&](geom::polygon_t const &input) {
+                write_polygon(data, input, with_z);
+            },
             [&](geom::multipoint_t const &input) {
-                write_multipoint(data, input);
+                write_multipoint(data, input, with_z);
             },
             [&](geom::multilinestring_t const &input) {
-                write_multilinestring(data, input);
+                write_multilinestring(data, input, with_z);
             },
             [&](geom::multipolygon_t const &input) {
-                write_multipolygon(data, input);
+                write_multipolygon(data, input, with_z);
             },
             [&](geom::collection_t const &input) {
-                write_collection(data, input);
+                write_collection(data, input, with_z);
             }});
     }
 }
@@ -197,8 +212,8 @@ void write_collection(std::string *data, geom::collection_t const &geom,
 class make_ewkb_visitor_t
 {
 public:
-    make_ewkb_visitor_t(uint32_t srid, bool ensure_multi) noexcept
-    : m_srid(srid), m_ensure_multi(ensure_multi)
+    make_ewkb_visitor_t(uint32_t srid, bool ensure_multi, bool with_z) noexcept
+    : m_srid(srid), m_ensure_multi(ensure_multi), m_with_z(with_z)
     {}
 
     std::string operator()(geom::nullgeom_t const & /*geom*/) const
@@ -209,18 +224,18 @@ public:
     std::string operator()(geom::point_t const &geom) const
     {
         constexpr std::size_t SIZE_POINT_HEADER_WITH_SRID = 1UL + 4UL + 4UL;
-        constexpr std::size_t SIZE_POINT =
-            SIZE_POINT_HEADER_WITH_SRID + SIZE_COORDINATE_PAIR;
+        std::size_t const SIZE_POINT =
+            SIZE_POINT_HEADER_WITH_SRID + coordinate_size();
 
         std::string data;
 
         if (m_ensure_multi) {
-            write_header(&data, wkb_multi_point, m_srid);
+            write_header(&data, wkb_multi_point, m_srid, m_with_z);
             write_length(&data, 1);
-            write_point(&data, geom);
+            write_point(&data, geom, m_with_z);
         } else {
             data.reserve(SIZE_POINT);
-            write_point(&data, geom, m_srid);
+            write_point(&data, geom, m_with_z, m_srid);
             assert(data.size() == SIZE_POINT);
         }
 
@@ -235,19 +250,19 @@ public:
 
         std::string data;
 
-        std::size_t const coords_size = geom.size() * SIZE_COORDINATE_PAIR;
+        std::size_t const coords_size = geom.size() * coordinate_size();
 
         if (m_ensure_multi) {
             data.reserve(SIZE_HEADER_WITH_COUNT_AND_SRID +
                          SIZE_HEADER_WITH_COUNT + coords_size);
-            write_header(&data, wkb_multi_line, m_srid);
+            write_header(&data, wkb_multi_line, m_srid, m_with_z);
             write_length(&data, 1);
-            write_linestring(&data, geom);
+            write_linestring(&data, geom, m_with_z);
             assert(data.size() == SIZE_HEADER_WITH_COUNT_AND_SRID +
                                       SIZE_HEADER_WITH_COUNT + coords_size);
         } else {
             data.reserve(SIZE_HEADER_WITH_COUNT_AND_SRID + coords_size);
-            write_linestring(&data, geom, m_srid);
+            write_linestring(&data, geom, m_with_z, m_srid);
             assert(data.size() ==
                    SIZE_HEADER_WITH_COUNT_AND_SRID + coords_size);
         }
@@ -260,11 +275,11 @@ public:
         std::string data;
 
         if (m_ensure_multi) {
-            write_header(&data, wkb_multi_polygon, m_srid);
+            write_header(&data, wkb_multi_polygon, m_srid, m_with_z);
             write_length(&data, 1);
-            write_polygon(&data, geom);
+            write_polygon(&data, geom, m_with_z);
         } else {
-            write_polygon(&data, geom, m_srid);
+            write_polygon(&data, geom, m_with_z, m_srid);
         }
 
         return data;
@@ -273,36 +288,42 @@ public:
     std::string operator()(geom::multipoint_t const &geom) const
     {
         std::string data;
-        write_multipoint(&data, geom, m_srid);
+        write_multipoint(&data, geom, m_with_z, m_srid);
         return data;
     }
 
     std::string operator()(geom::multilinestring_t const &geom) const
     {
         std::string data;
-        write_multilinestring(&data, geom, m_srid);
+        write_multilinestring(&data, geom, m_with_z, m_srid);
         return data;
     }
 
     std::string operator()(geom::multipolygon_t const &geom) const
     {
         std::string data;
-        write_multipolygon(&data, geom, m_srid);
+        write_multipolygon(&data, geom, m_with_z, m_srid);
         return data;
     }
 
     std::string operator()(geom::collection_t const &geom) const
     {
         std::string data;
-        write_collection(&data, geom, m_srid);
+        write_collection(&data, geom, m_with_z, m_srid);
         return data;
     }
 
 private:
     static constexpr std::size_t SIZE_COORDINATE_PAIR = 2UL * sizeof(double);
 
+    std::size_t coordinate_size() const noexcept
+    {
+        return m_with_z ? 3UL * sizeof(double) : SIZE_COORDINATE_PAIR;
+    }
+
     uint32_t m_srid;
     bool m_ensure_multi;
+    bool m_with_z;
 
 }; // class make_ewkb_visitor_t
 
@@ -570,10 +591,11 @@ private:
 
 } // namespace ewkb
 
-std::string geom_to_ewkb(geom::geometry_t const &geom, bool ensure_multi)
+std::string geom_to_ewkb(geom::geometry_t const &geom, bool ensure_multi,
+                         bool with_z)
 {
     return geom.visit(ewkb::make_ewkb_visitor_t{
-        static_cast<uint32_t>(geom.srid()), ensure_multi});
+        static_cast<uint32_t>(geom.srid()), ensure_multi, with_z});
 }
 
 geom::geometry_t ewkb_to_geom(std::string_view wkb)

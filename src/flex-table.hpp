@@ -178,6 +178,27 @@ public:
     std::string full_name() const;
     std::string full_tmp_name() const;
 
+    bool has_history() const noexcept { return m_has_history; }
+
+    void set_has_history(bool value) noexcept { m_has_history = value; }
+
+    std::string history_name() const { return m_name + "_history"; }
+    std::string full_history_name() const;
+
+    std::string build_sql_create_history_table() const;
+
+    std::string build_sql_dedup_history() const;
+
+    void set_middle_tables(std::string schema, std::string prefix)
+    {
+        m_middle_schema = std::move(schema);
+        m_middle_prefix = std::move(prefix);
+    }
+
+    bool has_derived_z_column() const noexcept;
+
+    std::string build_sql_derive_z(std::size_t batch_size) const;
+
     bool has_multiple_geom_columns() const noexcept
     {
         return m_has_multiple_geom_columns;
@@ -274,6 +295,11 @@ private:
     /// Does this table have more than one geometry column?
     bool m_has_multiple_geom_columns = false;
 
+    bool m_has_history = false;
+
+    std::string m_middle_schema;
+    std::string m_middle_prefix{"planet_osm"};
+
     /// Always build the id index, not only when it is needed for updates?
     bool m_always_build_id_index = false;
 
@@ -299,11 +325,16 @@ public:
           table->build_sql_column_list())),
       m_copy_mgr(copy_thread)
     {
+        if (table->has_history()) {
+            m_target->set_history(table->full_history_name());
+        }
     }
 
     void start(pg_conn_t const &db_connection, bool append) const;
 
     void stop(pg_conn_t const &db_connection, bool updateable, bool append);
+
+    void derive_z(pg_conn_t const &db_connection) const;
 
     flex_table_t const &table() const noexcept { return *m_table; }
 

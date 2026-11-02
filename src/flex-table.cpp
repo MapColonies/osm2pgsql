@@ -60,6 +60,11 @@ std::string flex_table_t::full_name() const
     return qualified_name(schema(), name());
 }
 
+std::string flex_table_t::full_history_name() const
+{
+    return qualified_name(schema(), history_name());
+}
+
 std::string flex_table_t::full_tmp_name() const
 {
     return qualified_name(schema(), name() + "_tmp");
@@ -207,6 +212,150 @@ flex_table_t::build_sql_create_table(table_type ttype,
     return sql;
 }
 
+std::string flex_table_t::build_sql_create_history_table() const
+{
+    assert(!m_columns.empty());
+    assert(m_has_history);
+
+    std::string sql =
+        fmt::format("CREATE TABLE IF NOT EXISTS {} (", full_history_name());
+
+    util::string_joiner_t joiner{','};
+    for (auto const &column : m_columns) {
+        joiner.add(column.sql_create());
+    }
+    joiner.add(R"("valid_to" timestamptz)");
+
+    sql += joiner();
+    sql += ')';
+    sql += tablespace_clause(m_data_tablespace);
+
+    return sql;
+}
+
+bool flex_table_t::has_derived_z_column() const noexcept
+{
+    return std::any_of(m_columns.cbegin(), m_columns.cend(), [](auto const &c) {
+        return !c.derive_z_from().empty();
+    });
+}
+
+std::string flex_table_t::build_sql_derive_z(std::size_t batch_size) const
+{
+    auto const column = std::find_if(
+        m_columns.cbegin(), m_columns.cend(),
+        [](auto const &c) { return !c.derive_z_from().empty(); });
+    if (column == m_columns.cend()) {
+        return {};
+    }
+
+    std::string id_column;
+    for (auto const &c : m_columns) {
+        if (c.type() == table_column_type::id_num) {
+            id_column = c.name();
+        }
+    }
+    if (id_column.empty()) {
+        throw fmt_error("Table '{}' derives a Z column, so it needs an id"
+                        " column to join the middle tables on.",
+                        m_name);
+    }
+
+    // The derived column carries its CRS inside sql_type, which osm2pgsql
+    // passes through without reading, so the column's own srid is still the
+    // default. It is the three-dimensional twin of the table's geometry and
+    // has to share its CRS, so that is what the SQL names.
+    if (!has_geom_column()) {
+        throw fmt_error("Table '{}' derives a Z column but has no geometry"
+                        " column to take a projection from.",
+                        m_name);
+    }
+    int const srid = geom_column().srid();
+
+    auto const middle = [&](char const *what) {
+        return qualified_name(m_middle_schema,
+                              fmt::format("{}_{}", m_middle_prefix, what));
+    };
+
+    // lat/lon are int4 at 100-nanodegree scale, and the generator writes the
+    // full-precision values into tags when it has them.
+    auto const point = fmt::format(
+        R"(ST_MakePoint()"
+        R"(COALESCE((n.tags->>'precised_lon')::float8, n.lon::float8/1e7),)"
+        R"(COALESCE((n.tags->>'precised_lat')::float8, n.lat::float8/1e7),)"
+        R"(COALESCE((n.tags->>'{}')::float8, 0)))",
+        column->derive_z_from());
+
+    if (m_id_type == flex_table_index_type::node) {
+        return fmt::format(
+            R"(WITH batch AS (SELECT "{1}" AS id FROM {0})"
+            R"( WHERE ST_ZMax("{2}") = 0 AND ST_ZMin("{2}") = 0 LIMIT {5}))"
+            R"( UPDATE {0} l SET "{2}" = ST_SetSRID({3}, {4}))"
+            R"( FROM batch b JOIN {6} n ON n.id = b.id WHERE l."{1}" = b.id)",
+            full_name(), id_column, column->name(), point, srid, batch_size,
+            middle("nodes"));
+    }
+
+    // A way's vertices are joined by node id, not by coordinate, so their
+    // order is preserved and a way revisiting one position at two altitudes
+    // resolves correctly.
+    // Same reason as the srid: the derived column's declared type is not the
+    // geometry type — that lives inside sql_type, which osm2pgsql does not
+    // read. The table's own geometry says whether the ring has to be closed.
+    char const *const wrap =
+        geom_column().type() == table_column_type::polygon ||
+                geom_column().type() == table_column_type::multipolygon
+            ? "ST_MakePolygon(z.g)"
+            : "z.g";
+
+    return fmt::format(
+        R"(WITH batch AS (SELECT "{1}" AS id FROM {0})"
+        R"( WHERE ST_ZMax("{2}") = 0 AND ST_ZMin("{2}") = 0 LIMIT {5}),)"
+        R"( z AS (SELECT w.id, ST_SetSRID(ST_MakeLine({3} ORDER BY wn.ord), {4}) AS g)"
+        R"( FROM batch b JOIN {6} w ON w.id = b.id)"
+        R"( CROSS JOIN LATERAL unnest(w.nodes) WITH ORDINALITY AS wn(node_id, ord))"
+        R"( JOIN {7} n ON n.id = wn.node_id GROUP BY w.id))"
+        R"( UPDATE {0} l SET "{2}" = {8} FROM z WHERE l."{1}" = z.id)",
+        full_name(), id_column, column->name(), point, srid, batch_size,
+        middle("ways"), middle("nodes"), wrap);
+}
+
+std::string flex_table_t::build_sql_dedup_history() const
+{
+    assert(m_has_history);
+
+    std::string match;
+    util::string_joiner_t hist{','};
+    util::string_joiner_t live{','};
+
+    for (auto const &column : m_columns) {
+        if (column.type() == table_column_type::id_type ||
+            column.type() == table_column_type::id_num) {
+            if (!match.empty()) {
+                match += " AND ";
+            }
+            match += fmt::format(R"(h."{0}" = b."{0}")", column.name());
+            continue;
+        }
+        if (column.create_only()) {
+            continue;
+        }
+        hist.add(fmt::format(R"(h."{}")", column.name()));
+        live.add(fmt::format(R"(b."{}")", column.name()));
+    }
+
+    if (match.empty() || hist.empty()) {
+        return {};
+    }
+
+    return fmt::format(
+        R"(DELETE FROM {} h USING {} b WHERE {})"
+        R"( AND h."valid_to" = (SELECT max("valid_to") FROM {}))"
+        R"( AND ROW({}) IS NOT DISTINCT FROM ROW({}))",
+        full_history_name(), full_name(), match, full_history_name(), hist(),
+        live());
+}
+
 std::string flex_table_t::build_sql_column_list() const
 {
     assert(!m_columns.empty());
@@ -313,6 +462,10 @@ void table_connection_t::start(pg_conn_t const &db_connection,
             table().full_name()));
 
         enable_check_trigger(db_connection, table());
+
+        if (table().has_history()) {
+            db_connection.exec(table().build_sql_create_history_table());
+        }
     }
 
     table().prepare(db_connection);
@@ -324,6 +477,15 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
     m_copy_mgr.sync();
 
     if (append) {
+        if (table().has_history() && table().has_id_column()) {
+            auto const sql = table().build_sql_dedup_history();
+            if (!sql.empty()) {
+                db_connection.exec(sql);
+            }
+        }
+        if (table().has_derived_z_column()) {
+            derive_z(db_connection);
+        }
         return;
     }
 
@@ -377,8 +539,39 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
         create_id_index(db_connection);
     }
 
+    if (table().has_derived_z_column()) {
+        derive_z(db_connection);
+    }
+
     log_info("Analyzing table '{}'...", table().name());
     table().analyze(db_connection);
+}
+
+void table_connection_t::derive_z(pg_conn_t const &db_connection) const
+{
+    constexpr std::size_t batch_size = 100000;
+
+    auto const sql = table().build_sql_derive_z(batch_size);
+    if (sql.empty()) {
+        return;
+    }
+
+    log_info("Deriving Z geometry for table '{}'...", table().name());
+
+    util::timer_t timer;
+    std::size_t total = 0;
+    while (true) {
+        auto const result = db_connection.exec(sql);
+        auto const rows = result.affected_rows();
+        if (rows == 0) {
+            break;
+        }
+        total += rows;
+        log_debug("  derived {} rows (total {})", rows, total);
+    }
+
+    log_info("Derived Z geometry for {} rows in table '{}' ({})", total,
+             table().name(), util::human_readable_duration(timer.stop()));
 }
 
 void table_connection_t::create_id_index(pg_conn_t const &db_connection)

@@ -117,6 +117,14 @@ public:
 
     bool create_only() const noexcept { return m_create_only; }
 
+    std::string const &derive_z_from() const noexcept { return m_derive_z_from; }
+
+    bool with_z() const noexcept { return m_with_z; }
+
+    void set_with_z(bool value) noexcept { m_with_z = value; }
+
+    void set_derive_z_from(std::string tag) { m_derive_z_from = std::move(tag); }
+
     void set_not_null(bool value = true) noexcept { m_not_null = value; }
 
     void set_create_only(bool value = true) noexcept { m_create_only = value; }
@@ -124,6 +132,8 @@ public:
     void set_projection(char const *projection);
 
     std::string sql_type_name() const;
+
+    char const *z_suffix() const noexcept;
     std::string sql_modifiers() const;
     std::string sql_create() const;
 
@@ -170,6 +180,10 @@ private:
      * For geometry columns only: The projection SRID. Default is web mercator.
      */
     int m_srid = PROJ_SPHERE_MERC;
+
+    /// Node tag holding the Z ordinate; empty when the column is not derived.
+    std::string m_derive_z_from;
+    bool m_with_z = false;
 
     /// NOT NULL constraint
     bool m_not_null = false;
