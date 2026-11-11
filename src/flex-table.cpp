@@ -355,6 +355,8 @@ std::string flex_table_t::build_sql_dedup_history() const
     assert(m_has_history);
 
     std::string match;
+    std::string match_deleted;
+    util::string_joiner_t ids{','};
     util::string_joiner_t hist{','};
     util::string_joiner_t live{','};
 
@@ -363,8 +365,11 @@ std::string flex_table_t::build_sql_dedup_history() const
             column.type() == table_column_type::id_num) {
             if (!match.empty()) {
                 match += " AND ";
+                match_deleted += " AND ";
             }
             match += fmt::format(R"(h."{0}" = b."{0}")", column.name());
+            match_deleted += fmt::format(R"(d."{0}" = b."{0}")", column.name());
+            ids.add(fmt::format(R"(h."{}")", column.name()));
             continue;
         }
         if (column.create_only()) {
@@ -378,12 +383,27 @@ std::string flex_table_t::build_sql_dedup_history() const
         return {};
     }
 
+    // A version superseded by an identical row was not a change. Its
+    // history row is dropped and the live row takes over its valid_from,
+    // so the timeline has no gap.
     return fmt::format(
-        R"(DELETE FROM {} h USING {} b WHERE {})"
-        R"( AND h."valid_to" = (SELECT max("valid_to") FROM {}))"
-        R"( AND ROW({}) IS NOT DISTINCT FROM ROW({}))",
-        full_history_name(), full_name(), match, full_history_name(), hist(),
-        live());
+        R"(WITH d AS (DELETE FROM {0} h USING {1} b WHERE {2})"
+        R"( AND h."valid_to" = {3})"
+        R"( AND ROW({4}) IS NOT DISTINCT FROM ROW({5}))"
+        R"( RETURNING {6}, h."valid_from"))"
+        R"( UPDATE {1} b SET "valid_from" = d."valid_from" FROM d WHERE {7})",
+        full_history_name(), full_name(), match, HISTORY_TIMESTAMP_SQL,
+        hist(), live(), ids(), match_deleted);
+}
+
+std::string flex_table_t::build_sql_delete_empty_history() const
+{
+    assert(m_has_history);
+
+    // A version replaced within the same run was never visible at any time.
+    return fmt::format(R"(DELETE FROM {} WHERE "valid_to" = {})"
+                       R"( AND "valid_from" = "valid_to")",
+                       full_history_name(), HISTORY_TIMESTAMP_SQL);
 }
 
 std::string flex_table_t::build_sql_column_list() const
@@ -539,6 +559,7 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
 
     if (append) {
         if (table().has_history() && table().has_id_column()) {
+            db_connection.exec(table().build_sql_delete_empty_history());
             auto const sql = table().build_sql_dedup_history();
             if (!sql.empty()) {
                 db_connection.exec(sql);

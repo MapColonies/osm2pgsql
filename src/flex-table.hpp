@@ -195,6 +195,8 @@ public:
 
     std::string build_sql_dedup_history() const;
 
+    std::string build_sql_delete_empty_history() const;
+
     std::vector<std::string> build_sql_create_history_indexes() const;
 
     partition_spec_t const &partition() const noexcept { return m_partition; }

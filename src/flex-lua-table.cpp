@@ -482,7 +482,10 @@ void setup_flex_table_history(lua_State *lua_state, flex_table_t *table,
         }
     }
 
-    table->add_column("valid_from", "timestamptz", "timestamptz DEFAULT now()")
+    table
+        ->add_column("valid_from", "timestamptz",
+                     fmt::format("timestamptz DEFAULT {}",
+                                 HISTORY_TIMESTAMP_SQL))
         .set_create_only();
 }
 

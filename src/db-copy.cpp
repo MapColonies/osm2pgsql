@@ -27,7 +27,7 @@ void db_deleter_by_id_t::delete_rows(std::string const &table,
     // Each deletable contributes an OSM ID and a comma. The highest node ID
     // currently has 10 digits, so 15 characters should do for a couple of years.
     // Add 50 characters for the SQL statement itself.
-    sql.reserve(m_deletables.size() * 15 + 50 + history.size() * 2);
+    sql.reserve(m_deletables.size() * 15 + 200 + history.size() * 2);
 
     if (!history.empty()) {
         fmt::format_to(std::back_inserter(sql), FMT_STRING("WITH d AS ("));
@@ -44,8 +44,8 @@ void db_deleter_by_id_t::delete_rows(std::string const &table,
     if (!history.empty()) {
         fmt::format_to(
             std::back_inserter(sql),
-            FMT_STRING(" RETURNING *) INSERT INTO {} SELECT d.*, now() FROM d"),
-            history);
+            FMT_STRING(" RETURNING *) INSERT INTO {} SELECT d.*, {} FROM d"),
+            history, HISTORY_TIMESTAMP_SQL);
     }
 
     sql.push_back('\0');
@@ -92,8 +92,8 @@ void db_deleter_by_type_and_id_t::delete_rows(std::string const &table,
         if (!history.empty()) {
             fmt::format_to(std::back_inserter(sql),
                            FMT_STRING(" RETURNING p.*) INSERT INTO {}"
-                                      " SELECT d.*, now() FROM d"),
-                           history);
+                                      " SELECT d.*, {} FROM d"),
+                           history, HISTORY_TIMESTAMP_SQL);
         }
     } else {
         fmt::format_to(std::back_inserter(sql),
@@ -108,8 +108,8 @@ void db_deleter_by_type_and_id_t::delete_rows(std::string const &table,
         if (!history.empty()) {
             fmt::format_to(std::back_inserter(sql),
                            FMT_STRING(" RETURNING *) INSERT INTO {}"
-                                      " SELECT d.*, now() FROM d"),
-                           history);
+                                      " SELECT d.*, {} FROM d"),
+                           history, HISTORY_TIMESTAMP_SQL);
         }
     }
 

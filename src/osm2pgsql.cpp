@@ -8,6 +8,7 @@
  */
 
 #include "command-line-parser.hpp"
+#include "format.hpp"
 #include "input.hpp"
 #include "logging.hpp"
 #include "middle.hpp"
@@ -20,8 +21,11 @@
 #include "util.hpp"
 #include "version.hpp"
 
+#include <osmium/osm/timestamp.hpp>
 #include <osmium/util/memory.hpp>
 
+#include <chrono>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <memory>
@@ -102,7 +106,11 @@ void check_db(options_t const &options)
 void set_up_properties(properties_t *properties, options_t const &options)
 {
     properties->set_bool("attributes", options.extra_attributes);
-    properties->set_bool("history", options.history);
+    // Only stored when set, so imports without history keep the same
+    // properties as upstream osm2pgsql.
+    if (options.history) {
+        properties->set_bool("history", true);
+    }
 
     if (options.flat_node_file.empty()) {
         properties->set_string("flat_node_file", "");
@@ -192,6 +200,39 @@ void check_history(properties_t const &properties, options_t *options)
         log_info("Updating with history (same as on import).");
         options->history = true;
     }
+}
+
+/**
+ * Give every database connection of this run the same timestamp, which
+ * history tables use for valid_from and valid_to (HISTORY_TIMESTAMP_SQL).
+ */
+void set_run_timestamp(connection_params_t *params)
+{
+    auto const micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    auto iso = osmium::Timestamp{micros / 1000000}.to_iso();
+    iso.pop_back(); // the 'Z'
+    auto const timestamp = fmt::format("{}.{:06d}Z", iso, micros % 1000000);
+
+    // Setting "options" replaces PGOPTIONS, so keep what was given there.
+    std::string options;
+    for (auto const &[key, value] : *params) {
+        if (key == "options") {
+            options = value;
+        }
+    }
+    if (options.empty()) {
+        if (char const *env = std::getenv("PGOPTIONS")) { // NOLINT(concurrency-mt-unsafe)
+            options = env;
+        }
+    }
+    if (!options.empty()) {
+        options += ' ';
+    }
+    options += "-c osm2pgsql.run_timestamp=" + timestamp;
+
+    params->set("options", options);
 }
 
 void check_and_update_flat_node_file(properties_t *properties,
@@ -365,6 +406,8 @@ int main(int argc, char *argv[])
         }
 
         util::timer_t timer_overall;
+
+        set_run_timestamp(&options.connection_params);
 
         check_db(options);
 
