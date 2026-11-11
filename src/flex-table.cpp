@@ -181,6 +181,90 @@ std::string flex_table_t::build_sql_prepare_get_wkb() const
                        full_name(), id_column_names());
 }
 
+namespace {
+
+std::string partition_clause(partition_spec_t const &spec)
+{
+    if (!spec.enabled()) {
+        return {};
+    }
+    return fmt::format(R"( PARTITION BY {} ("{}"))",
+                       spec.method == "hash" ? "HASH" : "RANGE", spec.column);
+}
+
+char const *partition_name_format(std::string const &interval)
+{
+    if (interval == "day") {
+        return "YYYY_MM_DD";
+    }
+    if (interval == "week") {
+        return "IYYY_\"w\"IW";
+    }
+    if (interval == "year") {
+        return "YYYY";
+    }
+    return "YYYY_MM";
+}
+
+} // anonymous namespace
+
+std::vector<std::string>
+flex_table_t::build_sql_create_partitions(partition_spec_t const &spec,
+                                          std::string const &table_name,
+                                          bool with_fixed) const
+{
+    std::vector<std::string> sqls;
+    if (!spec.enabled()) {
+        return sqls;
+    }
+
+    auto const parent = qualified_name(schema(), table_name);
+    auto const tablespace = tablespace_clause(m_data_tablespace);
+
+    if (spec.method == "hash") {
+        if (with_fixed) {
+            for (int i = 0; i < spec.count; ++i) {
+                sqls.push_back(fmt::format(
+                    "CREATE TABLE IF NOT EXISTS {} PARTITION OF {}"
+                    " FOR VALUES WITH (MODULUS {}, REMAINDER {}){}",
+                    qualified_name(schema(), fmt::format("{}_p{}", table_name, i)),
+                    parent, spec.count, i, tablespace));
+            }
+        }
+        return sqls;
+    }
+
+    if (with_fixed) {
+        sqls.push_back(fmt::format(
+            "CREATE TABLE IF NOT EXISTS {} PARTITION OF {} DEFAULT{}",
+            qualified_name(schema(), table_name + "_default"), parent,
+            tablespace));
+    }
+
+    sqls.push_back(fmt::format(
+        R"(DO $osm2pgsql$
+DECLARE
+    s timestamp;
+    part text;
+BEGIN
+    FOR i IN 0..1 LOOP
+        s := date_trunc('{0}', localtimestamp) + i * interval '1 {0}';
+        part := '{1}_p' || to_char(s, '{2}');
+        BEGIN
+            EXECUTE format('CREATE TABLE IF NOT EXISTS %I.%I PARTITION OF %s FOR VALUES FROM (%L) TO (%L){3}',
+                           '{4}', part, '{5}', s, s + interval '1 {0}');
+        EXCEPTION WHEN check_violation THEN
+            RAISE WARNING 'Partition % not created: the default partition already holds rows in its range.', part;
+        END;
+    END LOOP;
+END
+$osm2pgsql$)",
+        spec.interval, table_name, partition_name_format(spec.interval),
+        tablespace, schema(), parent));
+
+    return sqls;
+}
+
 std::string
 flex_table_t::build_sql_create_table(table_type ttype,
                                      std::string const &table_name) const
@@ -202,6 +286,10 @@ flex_table_t::build_sql_create_table(table_type ttype,
 
     sql += joiner();
     sql += ')';
+
+    if (ttype == table_type::permanent) {
+        sql += partition_clause(m_partition);
+    }
 
     if (ttype == table_type::interim) {
         sql += " WITH (autovacuum_enabled = off)";
@@ -225,9 +313,12 @@ std::string flex_table_t::build_sql_create_history_table() const
         joiner.add(column.sql_create());
     }
     joiner.add(R"("valid_to" timestamptz)");
+    joiner.add(R"("validity" tstzrange GENERATED ALWAYS AS)"
+               R"( (tstzrange("valid_from", "valid_to")) STORED)");
 
     sql += joiner();
     sql += ')';
+    sql += partition_clause(m_history_partition);
     sql += tablespace_clause(m_data_tablespace);
 
     return sql;
@@ -320,11 +411,39 @@ std::string flex_table_t::build_sql_derive_z(std::size_t batch_size) const
         middle("ways"), middle("nodes"), wrap);
 }
 
+std::vector<std::string> flex_table_t::build_sql_create_history_indexes() const
+{
+    assert(m_has_history);
+
+    auto const tablespace = tablespace_clause(index_tablespace());
+    std::vector<std::string> sqls;
+
+    if (has_geom_column()) {
+        sqls.push_back(fmt::format(
+            R"(CREATE INDEX ON {} USING GIST ("{}", "validity"){})",
+            full_history_name(), geom_column().name(), tablespace));
+    } else {
+        sqls.push_back(
+            fmt::format(R"(CREATE INDEX ON {} USING GIST ("validity"){})",
+                        full_history_name(), tablespace));
+    }
+
+    if (has_id_column()) {
+        sqls.push_back(fmt::format("CREATE INDEX ON {} USING BTREE ({}){}",
+                                   full_history_name(), id_column_names(),
+                                   tablespace));
+    }
+
+    return sqls;
+}
+
 std::string flex_table_t::build_sql_dedup_history() const
 {
     assert(m_has_history);
 
     std::string match;
+    std::string match_deleted;
+    util::string_joiner_t ids{','};
     util::string_joiner_t hist{','};
     util::string_joiner_t live{','};
 
@@ -333,8 +452,11 @@ std::string flex_table_t::build_sql_dedup_history() const
             column.type() == table_column_type::id_num) {
             if (!match.empty()) {
                 match += " AND ";
+                match_deleted += " AND ";
             }
             match += fmt::format(R"(h."{0}" = b."{0}")", column.name());
+            match_deleted += fmt::format(R"(d."{0}" = b."{0}")", column.name());
+            ids.add(fmt::format(R"(h."{}")", column.name()));
             continue;
         }
         if (column.create_only()) {
@@ -348,12 +470,27 @@ std::string flex_table_t::build_sql_dedup_history() const
         return {};
     }
 
+    // A version superseded by an identical row was not a change. Its
+    // history row is dropped and the live row takes over its valid_from,
+    // so the timeline has no gap.
     return fmt::format(
-        R"(DELETE FROM {} h USING {} b WHERE {})"
-        R"( AND h."valid_to" = (SELECT max("valid_to") FROM {}))"
-        R"( AND ROW({}) IS NOT DISTINCT FROM ROW({}))",
-        full_history_name(), full_name(), match, full_history_name(), hist(),
-        live());
+        R"(WITH d AS (DELETE FROM {0} h USING {1} b WHERE {2})"
+        R"( AND h."valid_to" = {3})"
+        R"( AND ROW({4}) IS NOT DISTINCT FROM ROW({5}))"
+        R"( RETURNING {6}, h."valid_from"))"
+        R"( UPDATE {1} b SET "valid_from" = d."valid_from" FROM d WHERE {7})",
+        full_history_name(), full_name(), match, HISTORY_TIMESTAMP_SQL,
+        hist(), live(), ids(), match_deleted);
+}
+
+std::string flex_table_t::build_sql_delete_empty_history() const
+{
+    assert(m_has_history);
+
+    // A version replaced within the same run was never visible at any time.
+    return fmt::format(R"(DELETE FROM {} WHERE "valid_to" = {})"
+                       R"( AND "valid_from" = "valid_to")",
+                       full_history_name(), HISTORY_TIMESTAMP_SQL);
 }
 
 std::string flex_table_t::build_sql_column_list() const
@@ -449,6 +586,10 @@ void table_connection_t::start(pg_conn_t const &db_connection,
 {
     if (!append) {
         drop_table_if_exists(db_connection, table().schema(), table().name());
+        if (table().has_history()) {
+            drop_table_if_exists(db_connection, table().schema(),
+                                 table().history_name());
+        }
     }
 
     // These _tmp tables can be left behind if we run out of disk space.
@@ -461,10 +602,37 @@ void table_connection_t::start(pg_conn_t const &db_connection,
                                       : flex_table_t::table_type::permanent,
             table().full_name()));
 
+        if (!table().cluster_by_geom()) {
+            for (auto const &sql : table().build_sql_create_partitions(
+                     table().partition(), table().name(), true)) {
+                db_connection.exec(sql);
+            }
+        }
+
         enable_check_trigger(db_connection, table());
 
         if (table().has_history()) {
             db_connection.exec(table().build_sql_create_history_table());
+            for (auto const &sql : table().build_sql_create_partitions(
+                     table().history_partition(), table().history_name(),
+                     true)) {
+                db_connection.exec(sql);
+            }
+            for (auto const &sql : table().build_sql_create_history_indexes()) {
+                db_connection.exec(sql);
+            }
+        }
+    } else {
+        for (auto const &sql : table().build_sql_create_partitions(
+                 table().partition(), table().name(), false)) {
+            db_connection.exec(sql);
+        }
+        if (table().has_history()) {
+            for (auto const &sql : table().build_sql_create_partitions(
+                     table().history_partition(), table().history_name(),
+                     false)) {
+                db_connection.exec(sql);
+            }
         }
     }
 
@@ -478,6 +646,7 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
 
     if (append) {
         if (table().has_history() && table().has_id_column()) {
+            db_connection.exec(table().build_sql_delete_empty_history());
             auto const sql = table().build_sql_dedup_history();
             if (!sql.empty()) {
                 db_connection.exec(sql);
@@ -497,24 +666,40 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
 
         log_info("Clustering table '{}' by geometry...", table().name());
 
-        db_connection.exec(table().build_sql_create_table(
-            flex_table_t::table_type::permanent, table().full_tmp_name()));
-
         std::string const columns = table().build_sql_column_list();
 
         auto const geom_column_name =
             "\"" + table().geom_column().name() + "\"";
 
-        std::string const sql =
-            fmt::format("INSERT INTO {} ({}) SELECT {} FROM {} ORDER BY {}",
-                        table().full_tmp_name(), columns, columns,
-                        table().full_name(), geom_column_name);
+        if (table().partition().enabled()) {
+            db_connection.exec(R"(ALTER TABLE {} RENAME TO "{}_tmp")",
+                               table().full_name(), table().name());
+            db_connection.exec(table().build_sql_create_table(
+                flex_table_t::table_type::permanent, table().full_name()));
+            for (auto const &sql : table().build_sql_create_partitions(
+                     table().partition(), table().name(), true)) {
+                db_connection.exec(sql);
+            }
+            db_connection.exec(fmt::format(
+                "INSERT INTO {} ({}) SELECT {} FROM {} ORDER BY {}",
+                table().full_name(), columns, columns, table().full_tmp_name(),
+                geom_column_name));
+            db_connection.exec("DROP TABLE {}", table().full_tmp_name());
+        } else {
+            db_connection.exec(table().build_sql_create_table(
+                flex_table_t::table_type::permanent, table().full_tmp_name()));
 
-        db_connection.exec(sql);
+            std::string const sql =
+                fmt::format("INSERT INTO {} ({}) SELECT {} FROM {} ORDER BY {}",
+                            table().full_tmp_name(), columns, columns,
+                            table().full_name(), geom_column_name);
 
-        db_connection.exec("DROP TABLE {}", table().full_name());
-        db_connection.exec(R"(ALTER TABLE {} RENAME TO "{}")",
-                           table().full_tmp_name(), table().name());
+            db_connection.exec(sql);
+
+            db_connection.exec("DROP TABLE {}", table().full_name());
+            db_connection.exec(R"(ALTER TABLE {} RENAME TO "{}")",
+                               table().full_tmp_name(), table().name());
+        }
         m_id_index_created = false;
 
         if (updateable) {

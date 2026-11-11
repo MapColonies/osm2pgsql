@@ -627,7 +627,7 @@ int output_flex_t::app_define_table()
     return setup_flex_table(lua_state(), m_tables.get(), m_expire_outputs.get(),
                             get_options()->dbschema,
                             get_options()->slim && !get_options()->droptemp,
-                            get_options()->append);
+                            get_options()->append, get_options()->history);
 }
 
 int output_flex_t::app_define_expire_output()
@@ -1315,7 +1315,7 @@ output_flex_t::output_flex_t(output_flex_t const *other,
     for (auto &expire_output : *m_expire_outputs) {
         m_expire_tiles.emplace_back(
             expire_output.maxzoom(),
-            reprojection_t::create_projection(expire_output.srid()),
+            reprojection_t::create_projection(PROJ_SPHERE_MERC),
             expire_output.max_tiles_geometry());
     }
 }
@@ -1358,21 +1358,16 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
         eo.set_minzoom(options.expire_tiles_zoom_min);
         eo.set_maxzoom(options.expire_tiles_zoom);
 
-        flex_table_t const *srid_table = nullptr;
         for (auto &table : *m_tables) {
             if (!table.has_geom_column()) {
                 continue;
             }
-            auto const srid = table.geom_column().srid();
-            if (!srid_table) {
-                srid_table = &table;
-                eo.set_srid(srid);
-            } else if (srid != eo.srid()) {
-                throw fmt_error(
-                    "Tile expiry needs all tables with a geometry column to use"
-                    " the same projection, but table '{}' uses SRID {} and"
-                    " table '{}' uses SRID {}.",
-                    srid_table->name(), eo.srid(), table.name(), srid);
+            if (!expire_tiles_t::supports_srid(table.geom_column().srid())) {
+                log_warn("Table '{}' is in SRID {}, but tile expiry only"
+                         " supports 3857 and 4326. Its changes will not"
+                         " expire any tiles.",
+                         table.name(), table.geom_column().srid());
+                continue;
             }
 
             expire_config_t config{};
@@ -1396,7 +1391,7 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
     for (auto const &expire_output : *m_expire_outputs) {
         m_expire_tiles.emplace_back(
             expire_output.maxzoom(),
-            reprojection_t::create_projection(expire_output.srid()),
+            reprojection_t::create_projection(PROJ_SPHERE_MERC),
             expire_output.max_tiles_geometry());
     }
 

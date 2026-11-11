@@ -193,6 +193,16 @@ mandatory for short options too.
     `/usr/share/osm2pgsql/default.style`, for other outputs there is no
     default.)
 
+\--history
+:   Keep history for every **flex** table that has ids and does not set
+    `history` itself. Set `history = false` in a table definition to leave it
+    out. The setting is stored in the database on import and used again on
+    every update, so it does not have to be repeated with **\--append**.
+    `valid_from` and `valid_to` are the time of the osm2pgsql run that
+    wrote the row, not the time of the OSM edit, and one run uses the same
+    time for all of its rows. History starts with the first import; OSM
+    history files are not read.
+
 # PGSQL OUTPUT OPTIONS
 
 \--tablespace-main-data=TABLESPC
@@ -270,13 +280,15 @@ mandatory for short options too.
 # EXPIRE OPTIONS
 
 -e, \--expire-tiles=[MIN_ZOOM-]MAX-ZOOM
-:   Create a tile expiry list.
+:   Create a tile expiry list. Only tables whose geometry column is in Web
+    Mercator (EPSG:3857) or WGS84 (EPSG:4326) are expired.
 
 -o, \--expire-output=FILENAME
 :   Output file name for expired tiles list.
 
 \--expire-bbox-size=SIZE
 :   Max size for a polygon to expire the whole polygon, not just the boundary.
+    The size is in Web Mercator units, also for tables in EPSG:4326.
 
 # ADVANCED OPTIONS
 

@@ -28,6 +28,16 @@
 #include <vector>
 
 /**
+ * SQL expression for the time an osm2pgsql run writes into history columns.
+ * Every connection of one run gets the same value (see main()), so the
+ * valid_to of a superseded row equals the valid_from of the row that
+ * replaced it. Falls back to now() outside osm2pgsql.
+ */
+inline constexpr char const *HISTORY_TIMESTAMP_SQL =
+    "COALESCE(NULLIF(current_setting('osm2pgsql.run_timestamp', true), '')"
+    "::timestamptz, now())";
+
+/**
  * Table information necessary for building SQL queries.
  */
 class db_target_descr_t
