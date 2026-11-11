@@ -209,7 +209,7 @@ std::string flex_table_column_t::sql_create() const
 void flex_table_column_t::add_expire(expire_config_t const &config)
 {
     assert(is_geometry_column());
-    assert(srid() > 0);
+    assert(expire_tiles_t::supports_srid(srid()));
     m_expires.push_back(config);
 }
 
@@ -316,6 +316,7 @@ void flex_table_column_t::do_expire(
     for (auto const &expire_config : m_expires) {
         assert(expire_config.expire_output < expire->size());
         auto &expire_tiles = expire->at(expire_config.expire_output);
+        expire_tiles.set_srid(srid());
 
         if (!expire_config.diff_expire || always_separate) {
             for (auto const &geom : *geoms_old) {
@@ -345,6 +346,7 @@ void flex_table_column_t::do_expire(
     for (auto const &expire_config : m_expires) {
         assert(expire_config.expire_output < expire->size());
         auto &expire_tiles = expire->at(expire_config.expire_output);
+        expire_tiles.set_srid(srid());
 
         if (expire_config.diff_expire) {
             for (auto const &geom : diff_points) {

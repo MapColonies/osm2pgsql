@@ -37,6 +37,21 @@ public:
 
     bool enabled() const noexcept { return m_maxzoom != 0; }
 
+    /**
+     * Can geometries in this SRID be expired? Only Web Mercator (3857) and
+     * WGS84 (4326) are supported: both are cylindrical, so a bounding box in
+     * either maps to a bounding box in tile coordinates.
+     */
+    static bool supports_srid(int srid) noexcept;
+
+    /**
+     * Set the SRID of the geometries passed in from now on. Until this is
+     * called they are in the projection given to the constructor.
+     *
+     * \pre supports_srid(srid)
+     */
+    void set_srid(int srid);
+
     void from_polygon_boundary(geom::polygon_t const &geom,
                                expire_config_t const &expire_config);
 
@@ -94,6 +109,11 @@ private:
      */
     geom::point_t coords_to_tile(geom::point_t const &point);
 
+    template <typename TGEOM>
+    expire_mode decide_expire_mode(TGEOM const &geom,
+                                   expire_config_t const &expire_config,
+                                   geom::box_t *box) const;
+
     /**
      * Expire a single tile.
      *
@@ -117,6 +137,9 @@ private:
     std::unordered_set<quadkey_t> m_dirty_tiles;
 
     std::shared_ptr<reprojection_t> m_projection;
+
+    /// Projection of the geometries passed in, see set_srid().
+    reprojection_t const *m_current_projection;
 
     std::size_t m_max_tiles_geometry;
     uint32_t m_maxzoom;
