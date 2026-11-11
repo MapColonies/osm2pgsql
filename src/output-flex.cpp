@@ -627,7 +627,7 @@ int output_flex_t::app_define_table()
     return setup_flex_table(lua_state(), m_tables.get(), m_expire_outputs.get(),
                             get_options()->dbschema,
                             get_options()->slim && !get_options()->droptemp,
-                            get_options()->append);
+                            get_options()->append, get_options()->history);
 }
 
 int output_flex_t::app_define_expire_output()

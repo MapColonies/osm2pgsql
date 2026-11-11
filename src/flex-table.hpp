@@ -51,6 +51,16 @@ enum class flex_table_index_type : uint8_t
 /**
  * An output table (in the SQL sense) for the flex backend.
  */
+struct partition_spec_t
+{
+    std::string column;
+    std::string method;
+    std::string interval;
+    int count = 0;
+
+    bool enabled() const noexcept { return !column.empty(); }
+};
+
 class flex_table_t
 {
 
@@ -174,6 +184,40 @@ public:
     std::string full_name() const;
     std::string full_tmp_name() const;
 
+    bool has_history() const noexcept { return m_has_history; }
+
+    void set_has_history(bool value) noexcept { m_has_history = value; }
+
+    std::string history_name() const { return m_name + "_history"; }
+    std::string full_history_name() const;
+
+    std::string build_sql_create_history_table() const;
+
+    std::string build_sql_dedup_history() const;
+
+    std::string build_sql_delete_empty_history() const;
+
+    std::vector<std::string> build_sql_create_history_indexes() const;
+
+    partition_spec_t const &partition() const noexcept { return m_partition; }
+
+    void set_partition(partition_spec_t spec) { m_partition = std::move(spec); }
+
+    partition_spec_t const &history_partition() const noexcept
+    {
+        return m_history_partition;
+    }
+
+    void set_history_partition(partition_spec_t spec)
+    {
+        m_history_partition = std::move(spec);
+    }
+
+    std::vector<std::string>
+    build_sql_create_partitions(partition_spec_t const &spec,
+                                std::string const &table_name,
+                                bool with_fixed) const;
+
     bool has_multiple_geom_columns() const noexcept
     {
         return m_has_multiple_geom_columns;
@@ -266,6 +310,12 @@ private:
     /// Does this table have more than one geometry column?
     bool m_has_multiple_geom_columns = false;
 
+    bool m_has_history = false;
+
+    partition_spec_t m_partition;
+
+    partition_spec_t m_history_partition;
+
     /// Always build the id index, not only when it is needed for updates?
     bool m_always_build_id_index = false;
 
@@ -291,6 +341,9 @@ public:
           table->build_sql_column_list())),
       m_copy_mgr(copy_thread)
     {
+        if (table->has_history()) {
+            m_target->set_history(table->full_history_name());
+        }
     }
 
     void start(pg_conn_t const &db_connection, bool append) const;

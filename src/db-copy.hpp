@@ -28,6 +28,16 @@
 #include <vector>
 
 /**
+ * SQL expression for the time an osm2pgsql run writes into history columns.
+ * Every connection of one run gets the same value (see main()), so the
+ * valid_to of a superseded row equals the valid_from of the row that
+ * replaced it. Falls back to now() outside osm2pgsql.
+ */
+inline constexpr char const *HISTORY_TIMESTAMP_SQL =
+    "COALESCE(NULLIF(current_setting('osm2pgsql.run_timestamp', true), '')"
+    "::timestamptz, now())";
+
+/**
  * Table information necessary for building SQL queries.
  */
 class db_target_descr_t
@@ -46,8 +56,10 @@ public:
     std::string const &name() const noexcept { return m_name; }
     std::string const &id() const noexcept { return m_id; }
     std::string const &rows() const noexcept { return m_rows; }
+    std::string const &history() const noexcept { return m_history; }
 
     void set_rows(std::string rows) { m_rows = std::move(rows); }
+    void set_history(std::string history) { m_history = std::move(history); }
 
     /**
      * Check if the buffer would use exactly the same copy operation.
@@ -68,6 +80,8 @@ private:
     std::string m_id;
     /// Comma-separated list of rows for copy operation (when empty: all rows)
     std::string m_rows;
+    /// Qualified name of the history table (when empty: history disabled)
+    std::string m_history;
 };
 
 /**
@@ -87,6 +101,7 @@ public:
     void add(osmid_t osm_id) { m_deletables.push_back(osm_id); }
 
     void delete_rows(std::string const &table, std::string const &column,
+                     std::string const &history,
                      pg_conn_t const &db_connection);
 
     bool is_full() const noexcept { return m_deletables.size() > MAX_ENTRIES; }
@@ -127,6 +142,7 @@ public:
     }
 
     void delete_rows(std::string const &table, std::string const &column,
+                     std::string const &history,
                      pg_conn_t const &db_connection);
 
     bool is_full() const noexcept { return m_deletables.size() > MAX_ENTRIES; }
@@ -192,7 +208,7 @@ public:
         if (m_deleter.has_data()) {
             m_deleter.delete_rows(
                 qualified_name(target->schema(), target->name()), target->id(),
-                db_connection);
+                target->history(), db_connection);
         }
     }
 

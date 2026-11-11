@@ -449,10 +449,178 @@ TRAMPOLINE_WRAPPED_OBJECT(table, schema)
 
 } // anonymous namespace
 
+void setup_flex_table_history(lua_State *lua_state, flex_table_t *table,
+                              bool default_history)
+{
+    assert(lua_state);
+    assert(table);
+
+    lua_getfield(lua_state, -1, "history");
+    if (lua_isboolean(lua_state, -1)) {
+        table->set_has_history(lua_toboolean(lua_state, -1));
+    } else if (lua_isnil(lua_state, -1)) {
+        table->set_has_history(default_history && table->has_id_column());
+    } else {
+        throw fmt_error("The 'history' field in table '{}' must be a boolean.",
+                        table->name());
+    }
+    lua_pop(lua_state, 1);
+
+    if (!table->has_history()) {
+        return;
+    }
+
+    if (!table->has_id_column()) {
+        throw fmt_error("Table '{}' has history enabled but no ids. History"
+                        " needs ids to find the rows a change replaces.",
+                        table->name());
+    }
+
+    for (char const *name : {"valid_from", "valid_to", "validity"}) {
+        if (util::find_by_name(table->columns(), name)) {
+            throw fmt_error(
+                "Table '{}' has history enabled, so column '{}' is added by"
+                " osm2pgsql and must not be defined in the Lua config.",
+                table->name(), name);
+        }
+    }
+
+    table
+        ->add_column("valid_from", "timestamptz",
+                     fmt::format("timestamptz DEFAULT {}",
+                                 HISTORY_TIMESTAMP_SQL))
+        .set_create_only();
+}
+
+namespace {
+
+bool is_time_column(flex_table_column_t const &column)
+{
+    auto const type = column.sql_type_name();
+    return type.rfind("timestamp", 0) == 0 || type.rfind("date", 0) == 0;
+}
+
+partition_spec_t parse_partition(lua_State *lua_state,
+                                 flex_table_t const &table,
+                                 char const *field, bool for_history)
+{
+    partition_spec_t spec;
+
+    lua_getfield(lua_state, -1, field);
+    if (lua_isnil(lua_state, -1)) {
+        lua_pop(lua_state, 1);
+        return spec;
+    }
+    if (!lua_istable(lua_state, -1)) {
+        throw fmt_error("The '{}' field in table '{}' must be a Lua table.",
+                        field, table.name());
+    }
+
+    spec.column = luaX_get_table_string(lua_state, "column", -1,
+                                        "The partition field");
+    lua_pop(lua_state, 1);
+    spec.method = luaX_get_table_string(lua_state, "by", -1,
+                                        "The partition field");
+    lua_pop(lua_state, 1);
+
+    auto const *column = util::find_by_name(table.columns(), spec.column);
+    bool const is_valid_to = for_history && spec.column == "valid_to";
+    if (!column && !is_valid_to) {
+        throw fmt_error("The '{}' field in table '{}' names column '{}',"
+                        " which is not a column of that table.",
+                        field, table.name(), spec.column);
+    }
+
+    if (spec.method == "range") {
+        if (!is_valid_to && !is_time_column(*column)) {
+            throw fmt_error("Range partitioning in table '{}' needs a"
+                            " timestamp, timestamptz or date column, but '{}'"
+                            " is {}.",
+                            table.name(), spec.column,
+                            column->sql_type_name());
+        }
+        spec.interval = luaX_get_table_string(lua_state, "interval", -1,
+                                              "The partition field", "");
+        lua_pop(lua_state, 1);
+        if (spec.interval != "day" && spec.interval != "week" &&
+            spec.interval != "month" && spec.interval != "year") {
+            throw fmt_error("Range partitioning in table '{}' needs"
+                            " 'interval' set to 'day', 'week', 'month' or"
+                            " 'year'.",
+                            table.name());
+        }
+    } else if (spec.method == "hash") {
+        lua_getfield(lua_state, -1, "count");
+        auto const count = lua_tonumber(lua_state, -1);
+        if (!lua_isnumber(lua_state, -1) || count < 2 ||
+            count != static_cast<double>(static_cast<int>(count))) {
+            throw fmt_error("Hash partitioning in table '{}' needs 'count'"
+                            " set to an integer of 2 or more.",
+                            table.name());
+        }
+        spec.count = static_cast<int>(count);
+        lua_pop(lua_state, 1);
+    } else {
+        throw fmt_error("Unknown value '{}' for 'by' in the '{}' field of"
+                        " table '{}' (use 'range' or 'hash').",
+                        spec.method, field, table.name());
+    }
+
+    lua_pop(lua_state, 1);
+    return spec;
+}
+
+void check_unique_indexes(flex_table_t const &table)
+{
+    auto const &key = table.partition().column;
+
+    for (auto const &index : table.indexes()) {
+        if (!index.is_unique()) {
+            continue;
+        }
+        auto const &names = index.column_names();
+        if (std::find(names.cbegin(), names.cend(), key) == names.cend()) {
+            throw fmt_error("Unique index on table '{}' must include the"
+                            " partition key '{}'.",
+                            table.name(), key);
+        }
+    }
+
+    if (table.build_unique_id_index()) {
+        auto const ids = "," + table.id_column_names() + ",";
+        if (ids.find("," + key + ",") == std::string::npos) {
+            throw fmt_error("The unique id index on table '{}' must include"
+                            " the partition key '{}'.",
+                            table.name(), key);
+        }
+    }
+}
+
+void setup_flex_table_partitions(lua_State *lua_state, flex_table_t *table)
+{
+    table->set_partition(
+        parse_partition(lua_state, *table, "partition", false));
+
+    auto history_spec =
+        parse_partition(lua_state, *table, "history_partition", true);
+    if (history_spec.enabled() && !table->has_history()) {
+        throw fmt_error("Table '{}' sets 'history_partition' but has no"
+                        " history.",
+                        table->name());
+    }
+    table->set_history_partition(std::move(history_spec));
+
+    if (table->partition().enabled()) {
+        check_unique_indexes(*table);
+    }
+}
+
+} // anonymous namespace
+
 int setup_flex_table(lua_State *lua_state, std::vector<flex_table_t> *tables,
                      std::vector<expire_output_t> *expire_outputs,
                      std::string const &default_schema, bool updatable,
-                     bool append_mode)
+                     bool append_mode, bool default_history)
 {
     if (lua_type(lua_state, 1) != LUA_TTABLE) {
         throw std::runtime_error{
@@ -464,6 +632,8 @@ int setup_flex_table(lua_State *lua_state, std::vector<flex_table_t> *tables,
     setup_flex_table_columns(lua_state, &new_table, expire_outputs,
                              append_mode);
     setup_flex_table_indexes(lua_state, &new_table, updatable);
+    setup_flex_table_history(lua_state, &new_table, default_history);
+    setup_flex_table_partitions(lua_state, &new_table);
 
     void *ptr = lua_newuserdata(lua_state, sizeof(std::size_t));
     auto *num = new (ptr) std::size_t{};
