@@ -18,6 +18,7 @@
 #include "wkb.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -28,9 +29,34 @@
 expire_tiles_t::expire_tiles_t(uint32_t max_zoom,
                                std::shared_ptr<reprojection_t> projection,
                                std::size_t max_tiles_geometry)
-: m_projection(std::move(projection)), m_max_tiles_geometry(max_tiles_geometry),
-  m_maxzoom(max_zoom), m_map_width(static_cast<int>(1U << m_maxzoom))
+: m_projection(std::move(projection)),
+  m_current_projection(m_projection.get()),
+  m_max_tiles_geometry(max_tiles_geometry), m_maxzoom(max_zoom),
+  m_map_width(static_cast<int>(1U << m_maxzoom))
 {
+}
+
+bool expire_tiles_t::supports_srid(int srid) noexcept
+{
+    return srid == PROJ_SPHERE_MERC || srid == PROJ_LATLONG;
+}
+
+void expire_tiles_t::set_srid(int srid)
+{
+    assert(supports_srid(srid));
+
+    // Both are plain functions without any PROJ context, so one instance
+    // of each can be shared by all threads.
+    static auto const merc = reprojection_t::create_projection(PROJ_SPHERE_MERC);
+    static auto const latlon = reprojection_t::create_projection(PROJ_LATLONG);
+
+    if (srid == m_projection->target_srs()) {
+        m_current_projection = m_projection.get();
+    } else if (srid == PROJ_SPHERE_MERC) {
+        m_current_projection = merc.get();
+    } else {
+        m_current_projection = latlon.get();
+    }
 }
 
 void expire_tiles_t::expire_tile(uint32_t x, uint32_t y)
@@ -63,7 +89,7 @@ uint32_t expire_tiles_t::normalise_tile_x_coord(int x) const
 
 geom::point_t expire_tiles_t::coords_to_tile(geom::point_t const &point)
 {
-    auto const c = m_projection->target_to_tile(point);
+    auto const c = m_current_projection->target_to_tile(point);
 
     return {m_map_width * (0.5 + c.x() / tile_t::EARTH_CIRCUMFERENCE),
             m_map_width * (0.5 - c.y() / tile_t::EARTH_CIRCUMFERENCE)};
@@ -113,27 +139,27 @@ void expire_tiles_t::from_polygon_boundary(geom::polygon_t const &geom,
     }
 }
 
-namespace {
-
 template <typename TGEOM>
-expire_mode decide_expire_mode(TGEOM const &geom,
-                               expire_config_t const &expire_config,
-                               geom::box_t *box)
+expire_mode
+expire_tiles_t::decide_expire_mode(TGEOM const &geom,
+                                   expire_config_t const &expire_config,
+                                   geom::box_t *box) const
 {
     if (expire_config.mode != expire_mode::hybrid) {
         return expire_config.mode;
     }
 
+    // The limit is in Web Mercator units, so compare the envelope there.
     *box = geom::envelope(geom);
-    if (box->width() > expire_config.full_area_limit ||
-        box->height() > expire_config.full_area_limit) {
+    auto const min = m_current_projection->target_to_tile(box->min());
+    auto const max = m_current_projection->target_to_tile(box->max());
+    if (max.x() - min.x() > expire_config.full_area_limit ||
+        max.y() - min.y() > expire_config.full_area_limit) {
         return expire_mode::boundary_only;
     }
 
     return expire_mode::full_area;
 }
-
-} // anonymous namespace
 
 void expire_tiles_t::build_tile_list(std::vector<uint32_t> *tile_x_list,
                                      geom::ring_t const &ring, double tile_y)

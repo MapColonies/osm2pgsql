@@ -569,6 +569,17 @@ def check_program_output(context, kind):
         assert line in s,\
                f"Output '{line}' not found in {kind} output:\n{s}\n"
 
+@then(r"the file (?P<filename>.+) contains exactly")
+def check_file_contents(context, filename):
+    with open(context.workdir / filename, 'r') as fd:
+        actual = sorted(line for line in fd.read().split('\n') if line)
+
+    expected = sorted(line.strip() for line in context.text.split('\n')
+                      if line.strip())
+
+    assert actual == expected,\
+           f"File {filename} contains:\n" + '\n'.join(actual)
+
 @then(r"the (?P<kind>\w+) output matches contents of (?P<result_file>.*)")
 def check_program_output_against_file(context, kind, result_file):
     if kind == 'error':

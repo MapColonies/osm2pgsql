@@ -601,3 +601,68 @@ TEST_CASE("expire polygon interior in 4326 matches web mercator", "[NoDB]")
     REQUIRE(std::find(latlon_tiles.cbegin(), latlon_tiles.cend(), interior) !=
             latlon_tiles.cend());
 }
+
+TEST_CASE("expire large 4326 polygon as boundary", "[NoDB]")
+{
+    // The limit is in Web Mercator units also for geometries in 4326, so the
+    // same polygon is expired as boundary only in both projections.
+    expire_config_t expire_config;
+    expire_config.mode = expire_mode::hybrid;
+    expire_config.full_area_limit = 10000;
+    geom::ring_t const ring{{5000.0, 5000.0},
+                            {25000.0, 5000.0},
+                            {25000.0, 25000.0},
+                            {5000.0, 25000.0},
+                            {5000.0, 5000.0}};
+
+    auto const merc_tiles =
+        expire(defproj, geom::polygon_t{geom::ring_t{ring}}, expire_config);
+    REQUIRE(merc_tiles.size() == 8);
+    REQUIRE(expire(latlonproj, geom::polygon_t{merc_to_latlon(ring)},
+                   expire_config) == merc_tiles);
+}
+
+TEST_CASE("expire geometries in 3857 and 4326 with one expire_tiles_t",
+          "[NoDB]")
+{
+    expire_config_t const expire_config;
+    geom::polygon_t const merc{{{5000.0, 5000.0},
+                                {25000.0, 5000.0},
+                                {25000.0, 25000.0},
+                                {5000.0, 25000.0},
+                                {5000.0, 5000.0}}};
+    geom::polygon_t const latlon{merc_to_latlon(merc.outer())};
+
+    auto const expected = expire(defproj, merc, expire_config);
+    REQUIRE(expected.size() == 9);
+
+    expire_tiles_t et{ZOOM, defproj};
+
+    SECTION("3857 first")
+    {
+        et.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry(merc, expire_config);
+        REQUIRE(et.get_tiles() == expected);
+        et.set_srid(PROJ_LATLONG);
+        et.from_geometry(latlon, expire_config);
+        REQUIRE(et.get_tiles() == expected);
+    }
+
+    SECTION("4326 first")
+    {
+        et.set_srid(PROJ_LATLONG);
+        et.from_geometry(latlon, expire_config);
+        REQUIRE(et.get_tiles() == expected);
+        et.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry(merc, expire_config);
+        REQUIRE(et.get_tiles() == expected);
+    }
+}
+
+TEST_CASE("only 3857 and 4326 can be expired", "[NoDB]")
+{
+    REQUIRE(expire_tiles_t::supports_srid(PROJ_SPHERE_MERC));
+    REQUIRE(expire_tiles_t::supports_srid(PROJ_LATLONG));
+    REQUIRE_FALSE(expire_tiles_t::supports_srid(2039));
+    REQUIRE_FALSE(expire_tiles_t::supports_srid(0));
+}
