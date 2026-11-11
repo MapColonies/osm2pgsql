@@ -83,3 +83,33 @@ Feature: History tables keep superseded versions
         And table osm2pgsql_test_points contains exactly
             | node_id |
             | 10      |
+
+    Scenario: An unchanged rewrite of a derived Z geometry leaves no history row
+        Given the lua style
+            """
+            local points = osm2pgsql.define_node_table('osm2pgsql_test_points', {
+                { column = 'name', type = 'text' },
+                { column = 'geom', type = 'point', projection = 4326,
+                  derive_z_from = 'altitude' },
+            }, { history = true })
+
+            function osm2pgsql.process_node(object)
+                points:insert({ name = object.tags.name, geom = object:as_point() })
+            end
+            """
+        And the OSM data
+            """
+            n10 v1 dV Tname=one,altitude=10 x10.0 y10.0
+            """
+        When running osm2pgsql flex with parameters
+            | --slim | -c |
+        Then execution is successful
+
+        Given the OSM data
+            """
+            n10 v2 dV Tname=one,altitude=10 x10.0 y10.0
+            """
+        When running osm2pgsql flex with parameters
+            | --slim | -a |
+        Then execution is successful
+        And table osm2pgsql_test_points_history has 0 rows

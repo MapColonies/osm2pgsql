@@ -645,15 +645,16 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
     m_copy_mgr.sync();
 
     if (append) {
+        // Z first, so new rows are compared with history at their real Z.
+        if (table().has_derived_z_column()) {
+            derive_z(db_connection);
+        }
         if (table().has_history() && table().has_id_column()) {
             db_connection.exec(table().build_sql_delete_empty_history());
             auto const sql = table().build_sql_dedup_history();
             if (!sql.empty()) {
                 db_connection.exec(sql);
             }
-        }
-        if (table().has_derived_z_column()) {
-            derive_z(db_connection);
         }
         return;
     }
