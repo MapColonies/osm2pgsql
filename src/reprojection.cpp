@@ -12,6 +12,8 @@
 #include "format.hpp"
 #include "reprojection.hpp"
 
+#include <mutex>
+
 namespace {
 
 geom::point_t lonlat2merc(geom::point_t point)
@@ -92,6 +94,10 @@ reprojection_t const &get_projection(int srs)
     // In almost all cases there will be only one or two projections used, so
     // storing them in a vector and doing linear search is totally fine.
     static std::vector<std::shared_ptr<reprojection_t>> projections;
+    static std::mutex mutex;
+
+    // Called from worker threads (flex-write.cpp, expire-tiles.cpp).
+    std::lock_guard<std::mutex> const guard{mutex};
 
     for (auto const &p : projections) {
         if (p->target_srs() == srs) {

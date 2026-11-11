@@ -640,20 +640,24 @@ TEST_CASE("expire geometries in 3857 and 4326 with one expire_tiles_t",
 
     SECTION("3857 first")
     {
-        et.set_srid(PROJ_SPHERE_MERC);
-        et.from_geometry(merc, expire_config);
+        et.from_geometry(merc, expire_config, PROJ_SPHERE_MERC);
         REQUIRE(et.get_tiles() == expected);
-        et.set_srid(PROJ_LATLONG);
-        et.from_geometry(latlon, expire_config);
+        et.from_geometry(latlon, expire_config, PROJ_LATLONG);
         REQUIRE(et.get_tiles() == expected);
     }
 
     SECTION("4326 first")
     {
-        et.set_srid(PROJ_LATLONG);
-        et.from_geometry(latlon, expire_config);
+        et.from_geometry(latlon, expire_config, PROJ_LATLONG);
         REQUIRE(et.get_tiles() == expected);
-        et.set_srid(PROJ_SPHERE_MERC);
+        et.from_geometry(merc, expire_config, PROJ_SPHERE_MERC);
+        REQUIRE(et.get_tiles() == expected);
+    }
+
+    SECTION("the SRID only applies to its own call")
+    {
+        et.from_geometry(latlon, expire_config, PROJ_LATLONG);
+        REQUIRE(et.get_tiles() == expected);
         et.from_geometry(merc, expire_config);
         REQUIRE(et.get_tiles() == expected);
     }
@@ -665,4 +669,43 @@ TEST_CASE("only 3857 and 4326 can be expired", "[NoDB]")
     REQUIRE(expire_tiles_t::supports_srid(PROJ_LATLONG));
     REQUIRE_FALSE(expire_tiles_t::supports_srid(2039));
     REQUIRE_FALSE(expire_tiles_t::supports_srid(0));
+}
+
+TEST_CASE("expire point next to the antimeridian wraps around", "[NoDB]")
+{
+    // Lon -179.99 is in the leftmost column. A buffer of 1.5 tiles reaches
+    // column -1, which is the rightmost column, 4095.
+    expire_config_t expire_config;
+    expire_config.buffer = 1.5;
+    expire_tiles_t et{ZOOM, latlonproj};
+    et.from_geometry(geom::point_t{-179.99, 0.01}, expire_config);
+
+    std::set<uint32_t> columns;
+    for (auto const quadkey : et.get_tiles()) {
+        columns.insert(tile_t::from_quadkey(quadkey, ZOOM).x());
+    }
+    REQUIRE(columns == std::set<uint32_t>{0, 1, 4095});
+}
+
+TEST_CASE("expire 4326 polygon beyond the Web Mercator latitude limit",
+          "[NoDB]")
+{
+    expire_config_t expire_config;
+    expire_config.mode = expire_mode::full_area;
+    expire_tiles_t et{4, latlonproj};
+
+    geom::polygon_t const poly{{{0.0, -89.99},
+                                {40.0, -89.99},
+                                {40.0, -60.0},
+                                {0.0, -60.0},
+                                {0.0, -89.99}}};
+    et.from_geometry(poly, expire_config);
+
+    auto const tiles = et.get_tiles();
+    REQUIRE_FALSE(tiles.empty());
+    for (auto const quadkey : tiles) {
+        auto const tile = tile_t::from_quadkey(quadkey, 4);
+        CHECK(tile.x() < 16);
+        CHECK(tile.y() < 16);
+    }
 }

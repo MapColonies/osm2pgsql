@@ -41,22 +41,26 @@ bool expire_tiles_t::supports_srid(int srid) noexcept
     return srid == PROJ_SPHERE_MERC || srid == PROJ_LATLONG;
 }
 
-void expire_tiles_t::set_srid(int srid)
+expire_tiles_t::projection_guard_t::projection_guard_t(
+    expire_tiles_t *expire_tiles, int srid)
+: m_expire_tiles(expire_tiles),
+  m_previous(expire_tiles->m_current_projection)
 {
     assert(supports_srid(srid));
+    // Both supported projections are plain functions without a PROJ
+    // context, so the shared instance is safe to use from every thread.
+    m_expire_tiles->m_current_projection = &get_projection(srid);
+}
 
-    // Both are plain functions without any PROJ context, so one instance
-    // of each can be shared by all threads.
-    static auto const merc = reprojection_t::create_projection(PROJ_SPHERE_MERC);
-    static auto const latlon = reprojection_t::create_projection(PROJ_LATLONG);
+expire_tiles_t::projection_guard_t::~projection_guard_t() noexcept
+{
+    m_expire_tiles->m_current_projection = m_previous;
+}
 
-    if (srid == m_projection->target_srs()) {
-        m_current_projection = m_projection.get();
-    } else if (srid == PROJ_SPHERE_MERC) {
-        m_current_projection = merc.get();
-    } else {
-        m_current_projection = latlon.get();
-    }
+uint32_t expire_tiles_t::clamp_to_map(double tile) const noexcept
+{
+    return static_cast<uint32_t>(
+        std::clamp(tile, 0.0, static_cast<double>(m_map_width - 1)));
 }
 
 void expire_tiles_t::expire_tile(uint32_t x, uint32_t y)
@@ -82,7 +86,7 @@ uint32_t expire_tiles_t::normalise_tile_x_coord(int x) const
 {
     x %= m_map_width;
     if (x < 0) {
-        x = (m_map_width - x) + 1;
+        x += m_map_width;
     }
     return static_cast<uint32_t>(x);
 }
@@ -108,12 +112,8 @@ void expire_tiles_t::from_geometry(geom::point_t const &geom,
 {
     auto const tilec = coords_to_tile(geom);
 
-    auto const ymin =
-        std::max(0U, static_cast<uint32_t>(tilec.y() - expire_config.buffer));
-
-    auto const ymax =
-        std::min(m_map_width - 1U,
-                 static_cast<uint32_t>(tilec.y() + expire_config.buffer));
+    auto const ymin = clamp_to_map(tilec.y() - expire_config.buffer);
+    auto const ymax = clamp_to_map(tilec.y() + expire_config.buffer);
 
     for (int x = static_cast<int>(tilec.x() - expire_config.buffer);
          x <= static_cast<int>(tilec.x() + expire_config.buffer); ++x) {
@@ -142,17 +142,16 @@ void expire_tiles_t::from_polygon_boundary(geom::polygon_t const &geom,
 template <typename TGEOM>
 expire_mode
 expire_tiles_t::decide_expire_mode(TGEOM const &geom,
-                                   expire_config_t const &expire_config,
-                                   geom::box_t *box) const
+                                   expire_config_t const &expire_config) const
 {
     if (expire_config.mode != expire_mode::hybrid) {
         return expire_config.mode;
     }
 
     // The limit is in Web Mercator units, so compare the envelope there.
-    *box = geom::envelope(geom);
-    auto const min = m_current_projection->target_to_tile(box->min());
-    auto const max = m_current_projection->target_to_tile(box->max());
+    auto const box = geom::envelope(geom);
+    auto const min = m_current_projection->target_to_tile(box.min());
+    auto const max = m_current_projection->target_to_tile(box.max());
     if (max.x() - min.x() > expire_config.full_area_limit ||
         max.y() - min.y() > expire_config.full_area_limit) {
         return expire_mode::boundary_only;
@@ -162,30 +161,25 @@ expire_tiles_t::decide_expire_mode(TGEOM const &geom,
 }
 
 void expire_tiles_t::build_tile_list(std::vector<uint32_t> *tile_x_list,
-                                     geom::ring_t const &ring, double tile_y)
+                                     std::vector<geom::point_t> const &ring,
+                                     double tile_y) const
 {
     assert(!ring.empty());
     for (std::size_t i = 1; i < ring.size(); ++i) {
-        auto const t1 = coords_to_tile(ring[i]);
-        auto const t2 = coords_to_tile(ring[i - 1]);
+        auto const &t1 = ring[i];
+        auto const &t2 = ring[i - 1];
 
         if ((t1.y() < tile_y && t2.y() >= tile_y) ||
             (t2.y() < tile_y && t1.y() >= tile_y)) {
             auto const pos =
                 (tile_y - t1.y()) / (t2.y() - t1.y()) * (t2.x() - t1.x());
-            tile_x_list->push_back(static_cast<uint32_t>(std::clamp(
-                t1.x() + pos, 0.0, static_cast<double>(m_map_width - 1))));
+            tile_x_list->push_back(clamp_to_map(t1.x() + pos));
         }
     }
 }
 
-void expire_tiles_t::from_polygon_area(geom::polygon_t const &geom,
-                                       geom::box_t box)
+void expire_tiles_t::from_polygon_area(geom::polygon_t const &geom)
 {
-    if (!box.valid()) {
-        box = geom::envelope(geom);
-    }
-
     // This uses a variation on a simple polygon fill algorithm, for instance
     // described on https://alienryderflex.com/polygon_fill/ . For each row
     // of tiles we find the intersections with the area boundary and "fill" in
@@ -193,12 +187,29 @@ void expire_tiles_t::from_polygon_area(geom::polygon_t const &geom,
     // about the boundary, because we simply use the algorithm we use for
     // expiry along a line to do that, which will also take care of the buffer.
 
-    // Coordinates are numbered from bottom to top, tiles are numbered from top
-    // to bottom, so "min" and "max" are switched here.
-    auto const max_tile_y =
-        static_cast<std::uint32_t>(coords_to_tile(box.min()).y());
-    auto const min_tile_y =
-        static_cast<std::uint32_t>(coords_to_tile(box.max()).y());
+    // Convert every ring to tile coordinates once, not once per tile row:
+    // for 4326 each conversion is a lonlat2merc.
+    auto const to_tiles = [&](geom::ring_t const &ring) {
+        std::vector<geom::point_t> tiles;
+        tiles.reserve(ring.size());
+        for (auto const &point : ring) {
+            tiles.push_back(coords_to_tile(point));
+        }
+        return tiles;
+    };
+
+    auto const outer = to_tiles(geom.outer());
+    std::vector<std::vector<geom::point_t>> inners;
+    inners.reserve(geom.inners().size());
+    for (auto const &ring : geom.inners()) {
+        inners.push_back(to_tiles(ring));
+    }
+
+    auto const [min_y, max_y] = std::minmax_element(
+        outer.cbegin(), outer.cend(),
+        [](auto const &a, auto const &b) { return a.y() < b.y(); });
+    auto const min_tile_y = clamp_to_map(min_y->y());
+    auto const max_tile_y = clamp_to_map(max_y->y());
 
     std::vector<uint32_t> tile_x_list;
 
@@ -207,9 +218,8 @@ void expire_tiles_t::from_polygon_area(geom::polygon_t const &geom,
 
         // Build a list of tiles crossed by the area boundary
         tile_x_list.clear();
-        build_tile_list(&tile_x_list, geom.outer(),
-                        static_cast<double>(tile_y));
-        for (auto const &ring : geom.inners()) {
+        build_tile_list(&tile_x_list, outer, static_cast<double>(tile_y));
+        for (auto const &ring : inners) {
             build_tile_list(&tile_x_list, ring, static_cast<double>(tile_y));
         }
 
@@ -235,8 +245,7 @@ void expire_tiles_t::from_polygon_area(geom::polygon_t const &geom,
 void expire_tiles_t::from_geometry(geom::polygon_t const &geom,
                                    expire_config_t const &expire_config)
 {
-    geom::box_t box;
-    auto const mode = decide_expire_mode(geom, expire_config, &box);
+    auto const mode = decide_expire_mode(geom, expire_config);
 
     from_polygon_boundary(geom, expire_config);
 
@@ -244,15 +253,14 @@ void expire_tiles_t::from_geometry(geom::polygon_t const &geom,
     // single tile expired the whole polygon is inside that tile and we
     // don't need to do the polygon expire.
     if (mode == expire_mode::full_area && m_dirty_tiles.size() > 1) {
-        from_polygon_area(geom, box);
+        from_polygon_area(geom);
     }
 }
 
 void expire_tiles_t::from_geometry(geom::multipolygon_t const &geom,
                                    expire_config_t const &expire_config)
 {
-    geom::box_t box;
-    auto const mode = decide_expire_mode(geom, expire_config, &box);
+    auto const mode = decide_expire_mode(geom, expire_config);
 
     for (auto const &sgeom : geom) {
         from_polygon_boundary(sgeom, expire_config);
@@ -263,7 +271,7 @@ void expire_tiles_t::from_geometry(geom::multipolygon_t const &geom,
     // don't need to do the polygon expire.
     if (mode == expire_mode::full_area && m_dirty_tiles.size() > 1) {
         for (auto const &sgeom : geom) {
-            from_polygon_area(sgeom, geom::box_t{});
+            from_polygon_area(sgeom);
         }
     }
 }
@@ -340,7 +348,7 @@ void expire_tiles_t::from_line_segment(geom::point_t const &a,
             uint32_t const norm_x = normalise_tile_x_coord(x);
             for (int y = static_cast<int>(y1 - expire_config.buffer);
                  y <= static_cast<int>(y2 + expire_config.buffer); ++y) {
-                if (y >= 0) {
+                if (y >= 0 && y < m_map_width) {
                     expire_tile(norm_x, static_cast<uint32_t>(y));
                 }
             }

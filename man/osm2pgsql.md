@@ -270,8 +270,10 @@ mandatory for short options too.
 # EXPIRE OPTIONS
 
 -e, \--expire-tiles=[MIN_ZOOM-]MAX-ZOOM
-:   Create a tile expiry list. Only tables whose geometry column is in Web
-    Mercator (EPSG:3857) or WGS84 (EPSG:4326) are expired.
+:   Create a tile expiry list. With the **flex** output, tables whose
+    geometry column is in Web Mercator (EPSG:3857) or WGS84 (EPSG:4326) are
+    expired, and tables in any other projection are skipped with a warning.
+    The **pgsql** output only supports expiry in Web Mercator.
 
 -o, \--expire-output=FILENAME
 :   Output file name for expired tiles list.
