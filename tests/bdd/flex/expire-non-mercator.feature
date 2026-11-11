@@ -82,7 +82,7 @@ Feature: Expire with command line options on geometries not in Web Mercator
             | 4326  | 3857   |
 
     @config.have_proj
-    Scenario: Tables in other projections are not expired
+    Scenario: Tables in other projections are not expired, with a warning
         Given the lua style
             """
             local merc = osm2pgsql.define_node_table('osm2pgsql_test_merc', {
@@ -122,4 +122,8 @@ Feature: Expire with command line options on geometries not in Web Mercator
             """
             12/2161/1933
             12/2167/1927
+            """
+        And the error output contains
+            """
+            Table 'osm2pgsql_test_itm' is in SRID 2039, but tile expiry only supports 3857 and 4326.
             """
