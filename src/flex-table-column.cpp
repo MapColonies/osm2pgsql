@@ -209,7 +209,7 @@ std::string flex_table_column_t::sql_create() const
 void flex_table_column_t::add_expire(expire_config_t const &config)
 {
     assert(is_geometry_column());
-    assert(srid() == PROJ_SPHERE_MERC);
+    assert(expire_tiles_t::supports_srid(srid()));
     m_expires.push_back(config);
 }
 
@@ -319,10 +319,10 @@ void flex_table_column_t::do_expire(
 
         if (!expire_config.diff_expire || always_separate) {
             for (auto const &geom : *geoms_old) {
-                expire_tiles.from_geometry(geom, expire_config);
+                expire_tiles.from_geometry(geom, expire_config, srid());
             }
             for (auto const &geom : *geoms_new) {
-                expire_tiles.from_geometry(geom, expire_config);
+                expire_tiles.from_geometry(geom, expire_config, srid());
             }
             expire_tiles.commit_tiles(
                 &expire_outputs->at(expire_config.expire_output));
@@ -348,13 +348,13 @@ void flex_table_column_t::do_expire(
 
         if (expire_config.diff_expire) {
             for (auto const &geom : diff_points) {
-                expire_tiles.from_geometry(geom, expire_config);
+                expire_tiles.from_geometry(geom, expire_config, srid());
             }
             for (auto const &geom : diff_linestrings) {
-                expire_tiles.from_geometry(geom, expire_config);
+                expire_tiles.from_geometry(geom, expire_config, srid());
             }
             for (auto const &geom : diff_polygons) {
-                expire_tiles.from_geometry(geom, expire_config);
+                expire_tiles.from_geometry(geom, expire_config, srid());
             }
             expire_tiles.commit_tiles(
                 &expire_outputs->at(expire_config.expire_output));

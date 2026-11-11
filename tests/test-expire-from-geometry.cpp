@@ -9,6 +9,9 @@
 
 #include <catch.hpp>
 
+#include <osmium/geom/mercator_projection.hpp>
+
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <utility>
@@ -24,9 +27,38 @@ namespace {
 std::shared_ptr<reprojection_t> defproj{
     reprojection_t::create_projection(PROJ_SPHERE_MERC)};
 
+std::shared_ptr<reprojection_t> latlonproj{
+    reprojection_t::create_projection(PROJ_LATLONG)};
+
 // We are using zoom level 12 here, because at that level a tile is about
 // 10,000 units wide/high which gives us easy numbers to work with.
 constexpr uint32_t ZOOM = 12;
+
+geom::point_t merc_to_latlon(geom::point_t const &point)
+{
+    auto const c = osmium::geom::mercator_to_lonlat(
+        osmium::geom::Coordinates{point.x(), point.y()});
+    return {c.x, c.y};
+}
+
+template <typename TLIST>
+TLIST merc_to_latlon(TLIST const &list)
+{
+    TLIST result;
+    for (auto const &point : list) {
+        result.push_back(merc_to_latlon(point));
+    }
+    return result;
+}
+
+template <typename TGEOM>
+quadkey_list_t expire(std::shared_ptr<reprojection_t> const &projection,
+                      TGEOM const &geom, expire_config_t const &expire_config)
+{
+    expire_tiles_t et{ZOOM, projection};
+    et.from_geometry(geom, expire_config);
+    return et.get_tiles();
+}
 
 } // anonymous namespace
 
@@ -505,4 +537,175 @@ TEST_CASE("expire doesn't do anything if not in 3857", "[NoDB]")
 
     auto const tiles = et.get_tiles();
     REQUIRE(tiles.empty());
+}
+
+TEST_CASE("expire point in 4326 matches web mercator", "[NoDB]")
+{
+    expire_config_t const expire_config;
+    geom::point_t const pt{5000.0, 5000.0};
+
+    auto const merc_tiles = expire(defproj, pt, expire_config);
+    REQUIRE(merc_tiles.size() == 1);
+    REQUIRE(expire(latlonproj, merc_to_latlon(pt), expire_config) ==
+            merc_tiles);
+}
+
+TEST_CASE("expire linestring in 4326 matches web mercator", "[NoDB]")
+{
+    expire_config_t const expire_config;
+    geom::linestring_t const line{{5000.0, 5000.0}, {5000.0, 15000.0}};
+
+    auto const merc_tiles = expire(defproj, line, expire_config);
+    REQUIRE(merc_tiles.size() == 2);
+    REQUIRE(expire(latlonproj, merc_to_latlon(line), expire_config) ==
+            merc_tiles);
+}
+
+TEST_CASE("expire polygon boundary in 4326 matches web mercator", "[NoDB]")
+{
+    expire_config_t expire_config;
+    expire_config.mode = expire_mode::boundary_only;
+    geom::ring_t const ring{{5000.0, 5000.0},
+                            {25000.0, 5000.0},
+                            {25000.0, 25000.0},
+                            {5000.0, 25000.0},
+                            {5000.0, 5000.0}};
+
+    auto const merc_tiles =
+        expire(defproj, geom::polygon_t{geom::ring_t{ring}}, expire_config);
+    REQUIRE(merc_tiles.size() == 8);
+    REQUIRE(expire(latlonproj, geom::polygon_t{merc_to_latlon(ring)},
+                   expire_config) == merc_tiles);
+}
+
+TEST_CASE("expire polygon interior in 4326 matches web mercator", "[NoDB]")
+{
+    expire_config_t expire_config;
+    expire_config.mode = expire_mode::full_area;
+    geom::ring_t const ring{{5000.0, 5000.0},
+                            {25000.0, 5000.0},
+                            {25000.0, 25000.0},
+                            {5000.0, 25000.0},
+                            {5000.0, 5000.0}};
+
+    auto const merc_tiles =
+        expire(defproj, geom::polygon_t{geom::ring_t{ring}}, expire_config);
+    auto const latlon_tiles = expire(
+        latlonproj, geom::polygon_t{merc_to_latlon(ring)}, expire_config);
+
+    REQUIRE(merc_tiles.size() == 9);
+    REQUIRE(latlon_tiles == merc_tiles);
+
+    // The one tile no part of the boundary touches.
+    auto const interior = tile_t{ZOOM, 2049, 2046}.quadkey();
+    REQUIRE(std::find(latlon_tiles.cbegin(), latlon_tiles.cend(), interior) !=
+            latlon_tiles.cend());
+}
+
+TEST_CASE("expire large 4326 polygon as boundary", "[NoDB]")
+{
+    // The limit is in Web Mercator units also for geometries in 4326, so the
+    // same polygon is expired as boundary only in both projections.
+    expire_config_t expire_config;
+    expire_config.mode = expire_mode::hybrid;
+    expire_config.full_area_limit = 10000;
+    geom::ring_t const ring{{5000.0, 5000.0},
+                            {25000.0, 5000.0},
+                            {25000.0, 25000.0},
+                            {5000.0, 25000.0},
+                            {5000.0, 5000.0}};
+
+    auto const merc_tiles =
+        expire(defproj, geom::polygon_t{geom::ring_t{ring}}, expire_config);
+    REQUIRE(merc_tiles.size() == 8);
+    REQUIRE(expire(latlonproj, geom::polygon_t{merc_to_latlon(ring)},
+                   expire_config) == merc_tiles);
+}
+
+TEST_CASE("expire geometries in 3857 and 4326 with one expire_tiles_t",
+          "[NoDB]")
+{
+    expire_config_t const expire_config;
+    geom::polygon_t const merc{{{5000.0, 5000.0},
+                                {25000.0, 5000.0},
+                                {25000.0, 25000.0},
+                                {5000.0, 25000.0},
+                                {5000.0, 5000.0}}};
+    geom::polygon_t const latlon{merc_to_latlon(merc.outer())};
+
+    auto const expected = expire(defproj, merc, expire_config);
+    REQUIRE(expected.size() == 9);
+
+    expire_tiles_t et{ZOOM, defproj};
+
+    SECTION("3857 first")
+    {
+        et.from_geometry(merc, expire_config, PROJ_SPHERE_MERC);
+        REQUIRE(et.get_tiles() == expected);
+        et.from_geometry(latlon, expire_config, PROJ_LATLONG);
+        REQUIRE(et.get_tiles() == expected);
+    }
+
+    SECTION("4326 first")
+    {
+        et.from_geometry(latlon, expire_config, PROJ_LATLONG);
+        REQUIRE(et.get_tiles() == expected);
+        et.from_geometry(merc, expire_config, PROJ_SPHERE_MERC);
+        REQUIRE(et.get_tiles() == expected);
+    }
+
+    SECTION("the SRID only applies to its own call")
+    {
+        et.from_geometry(latlon, expire_config, PROJ_LATLONG);
+        REQUIRE(et.get_tiles() == expected);
+        et.from_geometry(merc, expire_config);
+        REQUIRE(et.get_tiles() == expected);
+    }
+}
+
+TEST_CASE("only 3857 and 4326 can be expired", "[NoDB]")
+{
+    REQUIRE(expire_tiles_t::supports_srid(PROJ_SPHERE_MERC));
+    REQUIRE(expire_tiles_t::supports_srid(PROJ_LATLONG));
+    REQUIRE_FALSE(expire_tiles_t::supports_srid(2039));
+    REQUIRE_FALSE(expire_tiles_t::supports_srid(0));
+}
+
+TEST_CASE("expire point next to the antimeridian wraps around", "[NoDB]")
+{
+    // Lon -179.99 is in the leftmost column. A buffer of 1.5 tiles reaches
+    // column -1, which is the rightmost column, 4095.
+    expire_config_t expire_config;
+    expire_config.buffer = 1.5;
+    expire_tiles_t et{ZOOM, latlonproj};
+    et.from_geometry(geom::point_t{-179.99, 0.01}, expire_config);
+
+    std::set<uint32_t> columns;
+    for (auto const quadkey : et.get_tiles()) {
+        columns.insert(tile_t::from_quadkey(quadkey, ZOOM).x());
+    }
+    REQUIRE(columns == std::set<uint32_t>{0, 1, 4095});
+}
+
+TEST_CASE("expire 4326 polygon beyond the Web Mercator latitude limit",
+          "[NoDB]")
+{
+    expire_config_t expire_config;
+    expire_config.mode = expire_mode::full_area;
+    expire_tiles_t et{4, latlonproj};
+
+    geom::polygon_t const poly{{{0.0, -89.99},
+                                {40.0, -89.99},
+                                {40.0, -60.0},
+                                {0.0, -60.0},
+                                {0.0, -89.99}}};
+    et.from_geometry(poly, expire_config);
+
+    auto const tiles = et.get_tiles();
+    REQUIRE_FALSE(tiles.empty());
+    for (auto const quadkey : tiles) {
+        auto const tile = tile_t::from_quadkey(quadkey, 4);
+        CHECK(tile.x() < 16);
+        CHECK(tile.y() < 16);
+    }
 }

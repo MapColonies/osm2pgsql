@@ -1359,16 +1359,24 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
         eo.set_maxzoom(options.expire_tiles_zoom);
 
         for (auto &table : *m_tables) {
-            if (table.has_geom_column() &&
-                table.geom_column().srid() == PROJ_SPHERE_MERC) {
-                expire_config_t config{};
-                config.expire_output = m_expire_outputs->size() - 1;
-                if (options.expire_tiles_max_bbox > 0.0) {
-                    config.mode = expire_mode::hybrid;
-                    config.full_area_limit = options.expire_tiles_max_bbox;
-                }
-                table.geom_column().add_expire(config);
+            if (!table.has_geom_column()) {
+                continue;
             }
+            if (!expire_tiles_t::supports_srid(table.geom_column().srid())) {
+                log_warn("Table '{}' is in SRID {}, but tile expiry only"
+                         " supports 3857 and 4326. Its changes will not"
+                         " expire any tiles.",
+                         table.name(), table.geom_column().srid());
+                continue;
+            }
+
+            expire_config_t config{};
+            config.expire_output = m_expire_outputs->size() - 1;
+            if (options.expire_tiles_max_bbox > 0.0) {
+                config.mode = expire_mode::hybrid;
+                config.full_area_limit = options.expire_tiles_max_bbox;
+            }
+            table.geom_column().add_expire(config);
         }
     }
 

@@ -10,6 +10,7 @@
 #include "flex-lua-table.hpp"
 
 #include "expire-output.hpp"
+#include "expire-tiles.hpp"
 #include "flex-lua-expire-output.hpp"
 #include "flex-lua-index.hpp"
 #include "flex-table.hpp"
@@ -230,9 +231,11 @@ void parse_and_set_expire_options(lua_State *lua_state,
         return;
     }
 
-    if (!column->is_geometry_column() || column->srid() != PROJ_SPHERE_MERC) {
-        throw std::runtime_error{"Expire only allowed for geometry"
-                                 " columns in Web Mercator projection."};
+    if (!column->is_geometry_column() ||
+        !expire_tiles_t::supports_srid(column->srid())) {
+        throw std::runtime_error{"Expire only allowed for geometry columns in"
+                                 " Web Mercator (3857) or WGS84 (4326)"
+                                 " projection."};
     }
 
     if (type == LUA_TUSERDATA) {
