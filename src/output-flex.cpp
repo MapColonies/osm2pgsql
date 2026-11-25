@@ -1350,6 +1350,17 @@ output_flex_t::output_flex_t(std::shared_ptr<middle_query_t> const &mid,
         log_warn("No output tables defined!");
     }
 
+    if (!options.extra_attributes) {
+        for (auto const &table : *m_tables) {
+            if (table.has_history()) {
+                throw fmt_error("Table '{}' has history enabled. History needs"
+                                " the timestamps of the source's versions."
+                                " Use -x/--extra-attributes.",
+                                table.name());
+            }
+        }
+    }
+
     // For backwards compatibility we add a "default" expire output to all
     // tables when the relevant command line options are used.
     if (options.append && options.expire_tiles_zoom) {

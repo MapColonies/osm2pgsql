@@ -28,7 +28,7 @@ Feature: History tables keep superseded versions
             n11 v1 dV Tname=other x11.0 y11.0
             """
         When running osm2pgsql flex with parameters
-            | --slim | -c |
+            | --slim | -c | -x |
         Then execution is successful
 
     Scenario: A changed row moves into history and the timeline has no gap

@@ -203,6 +203,19 @@ void check_history(properties_t const &properties, options_t *options)
 }
 
 /**
+ * History intervals use the timestamps of the source's versions, which
+ * osm2pgsql only reads with --extra-attributes.
+ */
+void check_history_needs_attributes(options_t const &options)
+{
+    if (options.history && !options.extra_attributes) {
+        throw std::runtime_error{
+            "History needs the timestamps of the source's versions."
+            " Use -x/--extra-attributes."};
+    }
+}
+
+/**
  * Give every database connection of this run the same timestamp, which
  * history tables use for valid_from and valid_to (HISTORY_TIMESTAMP_SQL).
  */
@@ -422,6 +435,7 @@ int main(int argc, char *argv[])
             }
 
             check_and_update_properties(&properties, &options);
+            check_history_needs_attributes(options);
             properties.store();
 
             auto const finfo = run(options, &properties);
@@ -439,6 +453,7 @@ int main(int argc, char *argv[])
             }
         } else {
             set_option_defaults(&options);
+            check_history_needs_attributes(options);
             set_up_properties(&properties, options);
             auto const finfo = run(options, &properties);
             store_data_properties(&properties, finfo);
