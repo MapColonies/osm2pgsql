@@ -24,8 +24,8 @@ Feature: History tables keep superseded versions
             """
         And the OSM data
             """
-            n10 v1 dV Tname=one x10.0 y10.0
-            n11 v1 dV Tname=other x11.0 y11.0
+            n10 v1 dV t2024-01-01T00:00:00Z Tname=one x10.0 y10.0
+            n11 v1 dV t2024-01-01T00:00:00Z Tname=other x11.0 y11.0
             """
         When running osm2pgsql flex with parameters
             | --slim | -c | -x |
@@ -34,7 +34,7 @@ Feature: History tables keep superseded versions
     Scenario: A changed row moves into history and the timeline has no gap
         Given the OSM data
             """
-            n10 v2 dV Tname=two x10.0 y10.0
+            n10 v2 dV t2024-02-01T00:00:00Z Tname=two x10.0 y10.0
             """
         When running osm2pgsql flex with parameters
             | --slim | -a |
@@ -49,7 +49,7 @@ Feature: History tables keep superseded versions
     Scenario: An unchanged rewrite leaves no history row and no gap
         Given the OSM data
             """
-            n10 v2 dV Tname=two x10.0 y10.0
+            n10 v2 dV t2024-02-01T00:00:00Z Tname=two x10.0 y10.0
             """
         When running osm2pgsql flex with parameters
             | --slim | -a |
@@ -57,7 +57,7 @@ Feature: History tables keep superseded versions
 
         Given the OSM data
             """
-            n10 v3 dV Tname=two x10.0 y10.0
+            n10 v3 dV t2024-03-01T00:00:00Z Tname=two x10.0 y10.0
             """
         When running osm2pgsql flex with parameters
             | --slim | -a |
@@ -72,7 +72,7 @@ Feature: History tables keep superseded versions
     Scenario: A deleted row moves into history
         Given the OSM data
             """
-            n11 v2 dD x11.0 y11.0
+            n11 v2 dD t2024-02-01T00:00:00Z x11.0 y11.0
             """
         When running osm2pgsql flex with parameters
             | --slim | -a |

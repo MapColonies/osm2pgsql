@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <string>
 
 char const *type_to_char(osmium::item_type type) noexcept
@@ -350,12 +351,29 @@ std::vector<std::string> flex_table_t::build_sql_create_history_indexes() const
     return sqls;
 }
 
-std::string flex_table_t::build_sql_dedup_history() const
+void flex_table_t::note_replaced_at(osmium::Timestamp timestamp) const
 {
-    assert(m_has_history);
+    std::lock_guard<std::mutex> const guard{m_replaced_range->mutex};
+    auto &range = *m_replaced_range;
+    if (!range.first.valid() || timestamp < range.first) {
+        range.first = timestamp;
+    }
+    if (!range.last.valid() || timestamp > range.last) {
+        range.last = timestamp;
+    }
+}
 
-    std::string match;
-    std::string match_deleted;
+std::pair<osmium::Timestamp, osmium::Timestamp>
+flex_table_t::replaced_range() const
+{
+    std::lock_guard<std::mutex> const guard{m_replaced_range->mutex};
+    return {m_replaced_range->first, m_replaced_range->last};
+}
+
+flex_table_t::history_comparison_t
+flex_table_t::history_comparison() const
+{
+    history_comparison_t cmp;
     util::string_joiner_t ids{','};
     util::string_joiner_t hist{','};
     util::string_joiner_t live{','};
@@ -363,47 +381,88 @@ std::string flex_table_t::build_sql_dedup_history() const
     for (auto const &column : m_columns) {
         if (column.type() == table_column_type::id_type ||
             column.type() == table_column_type::id_num) {
-            if (!match.empty()) {
-                match += " AND ";
-                match_deleted += " AND ";
+            if (!cmp.match.empty()) {
+                cmp.match += " AND ";
+                cmp.match_deleted += " AND ";
             }
-            match += fmt::format(R"(h."{0}" = b."{0}")", column.name());
-            match_deleted += fmt::format(R"(d."{0}" = b."{0}")", column.name());
+            cmp.match += fmt::format(R"(h."{0}" = b."{0}")", column.name());
+            cmp.match_deleted +=
+                fmt::format(R"(d."{0}" = b."{0}")", column.name());
             ids.add(fmt::format(R"(h."{}")", column.name()));
             continue;
         }
-        if (column.create_only()) {
+        if (column.create_only() || column.name() == "valid_from") {
             continue;
         }
         hist.add(fmt::format(R"(h."{}")", column.name()));
         live.add(fmt::format(R"(b."{}")", column.name()));
     }
 
-    if (match.empty() || hist.empty()) {
+    cmp.ids = ids();
+    cmp.hist = hist();
+    cmp.live = live();
+    return cmp;
+}
+
+std::string flex_table_t::build_sql_dedup_history(osmium::Timestamp first,
+                                                  osmium::Timestamp last) const
+{
+    assert(m_has_history);
+
+    auto const cmp = history_comparison();
+    if (cmp.match.empty() || cmp.hist.empty()) {
         return {};
     }
 
     // A version superseded by an identical row was not a change. Its
-    // history row is dropped and the live row takes over its valid_from,
-    // so the timeline has no gap.
+    // history row, which ends exactly where the live row begins, is dropped
+    // and the live row takes over its valid_from, so the timeline has no
+    // gap. Only rows superseded in this run (by valid_to) are looked at.
     return fmt::format(
         R"(WITH d AS (DELETE FROM {0} h USING {1} b WHERE {2})"
-        R"( AND h."valid_to" = {3})"
-        R"( AND ROW({4}) IS NOT DISTINCT FROM ROW({5}))"
-        R"( RETURNING {6}, h."valid_from"))"
-        R"( UPDATE {1} b SET "valid_from" = d."valid_from" FROM d WHERE {7})",
-        full_history_name(), full_name(), match, HISTORY_TIMESTAMP_SQL,
-        hist(), live(), ids(), match_deleted);
+        R"( AND h."valid_to" = b."valid_from")"
+        R"( AND h."valid_to" BETWEEN '{3}' AND '{4}')"
+        R"( AND ROW({5}) IS NOT DISTINCT FROM ROW({6}))"
+        R"( RETURNING {7}, h."valid_from"))"
+        R"( UPDATE {1} b SET "valid_from" = d."valid_from" FROM d WHERE {8})",
+        full_history_name(), full_name(), cmp.match, first.to_iso(),
+        last.to_iso(), cmp.hist, cmp.live, cmp.ids, cmp.match_deleted);
 }
 
-std::string flex_table_t::build_sql_delete_empty_history() const
+std::string
+flex_table_t::build_sql_count_dropped_changes(osmium::Timestamp first,
+                                              osmium::Timestamp last) const
 {
     assert(m_has_history);
 
-    // A version replaced within the same run was never visible at any time.
-    return fmt::format(R"(DELETE FROM {} WHERE "valid_to" = {})"
-                       R"( AND "valid_from" = "valid_to")",
-                       full_history_name(), HISTORY_TIMESTAMP_SQL);
+    auto const cmp = history_comparison();
+    if (cmp.match.empty() || cmp.hist.empty()) {
+        return {};
+    }
+
+    // A never-valid version that differs from the live row was replaced by
+    // a different version with the same timestamp, for example a way
+    // rebuilt because one of its nodes moved.
+    return fmt::format(
+        R"(SELECT count(*) FROM {0} h JOIN {1} b ON {2})"
+        R"( WHERE h."valid_from" = h."valid_to")"
+        R"( AND h."valid_to" BETWEEN '{3}' AND '{4}')"
+        R"( AND ROW({5}) IS DISTINCT FROM ROW({6}))",
+        full_history_name(), full_name(), cmp.match, first.to_iso(),
+        last.to_iso(), cmp.hist, cmp.live);
+}
+
+std::string
+flex_table_t::build_sql_delete_empty_history(osmium::Timestamp first,
+                                             osmium::Timestamp last) const
+{
+    assert(m_has_history);
+
+    // A version replaced by one with the same timestamp, such as a re-applied
+    // change, was never valid at any time.
+    return fmt::format(R"(DELETE FROM {} WHERE "valid_from" = "valid_to")"
+                       R"( AND "valid_to" BETWEEN '{}' AND '{}')",
+                       full_history_name(), first.to_iso(), last.to_iso());
 }
 
 std::string flex_table_t::build_sql_column_list() const
@@ -552,15 +611,39 @@ void table_connection_t::start(pg_conn_t const &db_connection,
     table().prepare(db_connection);
 }
 
+void table_connection_t::warn_about_dropped_changes(
+    pg_conn_t const &db_connection, osmium::Timestamp first,
+    osmium::Timestamp last) const
+{
+    auto const sql = table().build_sql_count_dropped_changes(first, last);
+    if (sql.empty()) {
+        return;
+    }
+
+    auto const result = db_connection.exec(sql);
+    auto const count = std::strtoull(result.get_value(0, 0), nullptr, 10);
+    if (count > 0) {
+        log_warn("{} version(s) of table '{}' were replaced by a different"
+                 " version with the same timestamp and are not kept in"
+                 " history. This happens when a node changes without the way"
+                 " that uses it, or when an older change is applied again.",
+                 count, table().name());
+    }
+}
+
 void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
                               bool append)
 {
     m_copy_mgr.sync();
 
     if (append) {
-        if (table().has_history() && table().has_id_column()) {
-            db_connection.exec(table().build_sql_delete_empty_history());
-            auto const sql = table().build_sql_dedup_history();
+        auto const [first, last] = table().replaced_range();
+        if (table().has_history() && table().has_id_column() &&
+            first.valid()) {
+            warn_about_dropped_changes(db_connection, first, last);
+            db_connection.exec(
+                table().build_sql_delete_empty_history(first, last));
+            auto const sql = table().build_sql_dedup_history(first, last);
             if (!sql.empty()) {
                 db_connection.exec(sql);
             }
@@ -662,14 +745,19 @@ pg_result_t table_connection_t::get_geoms_by_id(pg_conn_t const &db_connection,
     return db_connection.exec_prepared_as_binary(stmt.c_str(), id);
 }
 
-void table_connection_t::delete_rows_with(osmium::item_type type, osmid_t id)
+void table_connection_t::delete_rows_with(osmium::item_type type, osmid_t id,
+                                          osmium::Timestamp timestamp)
 {
     m_copy_mgr.new_line(m_target);
 
     if (!table().has_multicolumn_id_index()) {
         type = osmium::item_type::undefined;
     }
-    m_copy_mgr.delete_object(type_to_char(type)[0], id);
+    m_copy_mgr.delete_object(type_to_char(type)[0], id, timestamp);
+
+    if (table().has_history() && timestamp.valid()) {
+        table().note_replaced_at(timestamp);
+    }
 }
 
 void table_connection_t::task_wait()

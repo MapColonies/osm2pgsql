@@ -38,6 +38,7 @@
 #include "wkb.hpp"
 
 #include <cassert>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -117,6 +118,20 @@ prepared_lua_function_t::prepared_lua_function_t(lua_State *lua_state,
 namespace {
 
 char const *const OSM2PGSQL_OSMOBJECT_CLASS = "osm2pgsql.OSMObject";
+
+/// History intervals can only be written for versions with a timestamp.
+void check_history_timestamp(osmium::item_type type, osmid_t id,
+                             osmium::Timestamp timestamp)
+{
+    if (timestamp.valid()) {
+        return;
+    }
+    std::string name = osmium::item_type_to_name(type);
+    name[0] = static_cast<char>(std::toupper(name[0]));
+    throw fmt_error("{} {} has no timestamp. History needs the timestamps of"
+                    " the source's versions.",
+                    name, id);
+}
 
 void push_osm_object_to_lua_stack(lua_State *lua_state,
                                   osmium::OSMObject const &object)
@@ -809,6 +824,10 @@ int output_flex_t::table_insert()
                 copy_mgr->add_column(type_to_char(object.type()));
             } else if (column.type() == table_column_type::id_num) {
                 copy_mgr->add_column(id);
+            } else if (table.has_history() && column.name() == "valid_from") {
+                check_history_timestamp(object.type(), object.id(),
+                                        object.timestamp());
+                copy_mgr->add_column(object.timestamp().to_iso());
             } else {
                 flex_write_column(lua_state(), &m_geometry_cache, copy_mgr,
                                   column);
@@ -921,7 +940,7 @@ void output_flex_t::pending_way(osmid_t id)
         return;
     }
 
-    way_delete(id);
+    way_delete(id, m_way_cache.get().timestamp());
     auto const &func = m_way_cache.get().tags().empty() ? m_process_untagged_way
                                                         : m_process_way;
     if (func) {
@@ -996,7 +1015,8 @@ void output_flex_t::pending_relation(osmid_t id)
     }
 
     select_relation_members();
-    delete_from_tables(osmium::item_type::relation, id);
+    delete_from_tables(osmium::item_type::relation, id,
+                       m_relation_cache.get().timestamp());
     process_relation();
     expire_geoms_from_cache(true);
 }
@@ -1163,9 +1183,13 @@ void output_flex_t::relation_add(osmium::Relation const &relation)
 
 void output_flex_t::delete_from_table(table_connection_t *table_connection,
                                       pg_conn_t const &db_connection,
-                                      osmium::item_type type, osmid_t osm_id)
+                                      osmium::item_type type, osmid_t osm_id,
+                                      osmium::Timestamp timestamp)
 {
     assert(table_connection);
+    if (table_connection->table().has_history()) {
+        check_history_timestamp(type, osm_id, timestamp);
+    }
     auto const id = table_connection->table().map_id(type, osm_id);
 
     if (table_connection->table().has_columns_with_expire()) {
@@ -1186,14 +1210,15 @@ void output_flex_t::delete_from_table(table_connection_t *table_connection,
         }
     }
 
-    table_connection->delete_rows_with(type, id);
+    table_connection->delete_rows_with(type, id, timestamp);
 }
 
-void output_flex_t::delete_from_tables(osmium::item_type type, osmid_t osm_id)
+void output_flex_t::delete_from_tables(osmium::item_type type, osmid_t osm_id,
+                                       osmium::Timestamp timestamp)
 {
     for (auto &table : m_table_connections) {
         if (table.table().matches_type(type) && table.table().has_id_column()) {
-            delete_from_table(&table, m_db_connection, type, osm_id);
+            delete_from_table(&table, m_db_connection, type, osm_id, timestamp);
         }
     }
 }
@@ -1206,7 +1231,7 @@ void output_flex_t::node_delete(osmium::Node const &node)
         m_context_node = nullptr;
     }
 
-    node_delete(node.id());
+    node_delete(node.id(), node.timestamp());
     expire_geoms_from_cache();
 }
 
@@ -1218,7 +1243,7 @@ void output_flex_t::way_delete(osmium::Way *way)
                                         m_way_cache.get());
     }
 
-    way_delete(way->id());
+    way_delete(way->id(), way->timestamp());
     expire_geoms_from_cache();
 }
 
@@ -1229,44 +1254,45 @@ void output_flex_t::relation_delete(osmium::Relation const &rel)
         get_mutex_and_call_lua_function(m_process_deleted_relation, rel);
     }
 
-    relation_delete(rel.id());
+    relation_delete(rel.id(), rel.timestamp());
     expire_geoms_from_cache();
 }
 
 /* Delete is easy, just remove all traces of this object. We don't need to
  * worry about finding objects that depend on it, since the same diff must
  * contain the change for that also. */
-void output_flex_t::node_delete(osmid_t osm_id)
+void output_flex_t::node_delete(osmid_t osm_id, osmium::Timestamp timestamp)
 {
-    delete_from_tables(osmium::item_type::node, osm_id);
+    delete_from_tables(osmium::item_type::node, osm_id, timestamp);
 }
 
-void output_flex_t::way_delete(osmid_t osm_id)
+void output_flex_t::way_delete(osmid_t osm_id, osmium::Timestamp timestamp)
 {
-    delete_from_tables(osmium::item_type::way, osm_id);
+    delete_from_tables(osmium::item_type::way, osm_id, timestamp);
 }
 
-void output_flex_t::relation_delete(osmid_t osm_id)
+void output_flex_t::relation_delete(osmid_t osm_id,
+                                    osmium::Timestamp timestamp)
 {
     select_relation_members(osm_id);
-    delete_from_tables(osmium::item_type::relation, osm_id);
+    delete_from_tables(osmium::item_type::relation, osm_id, timestamp);
 }
 
 void output_flex_t::node_modify(osmium::Node const &node)
 {
-    node_delete(node.id());
+    node_delete(node.id(), node.timestamp());
     node_add(node);
 }
 
 void output_flex_t::way_modify(osmium::Way *way)
 {
-    way_delete(way->id());
+    way_delete(way->id(), way->timestamp());
     way_add(way);
 }
 
 void output_flex_t::relation_modify(osmium::Relation const &rel)
 {
-    relation_delete(rel.id());
+    relation_delete(rel.id(), rel.timestamp());
     relation_add(rel);
 }
 
@@ -1590,9 +1616,9 @@ void output_flex_t::reprocess_marked()
 
         for (osmid_t const id : *m_stage2_node_ids) {
             if (middle().node_get(id, &node_buffer)) {
-                node_delete(id);
+                auto const &node = node_buffer.get<osmium::Node>(0);
+                node_delete(id, node.timestamp());
                 if (m_process_node) {
-                    auto const &node = node_buffer.get<osmium::Node>(0);
                     m_context_node = &node;
                     get_mutex_and_call_lua_function(m_process_node, node);
                 }
@@ -1610,7 +1636,7 @@ void output_flex_t::reprocess_marked()
         if (!m_way_cache.init(middle(), id)) {
             continue;
         }
-        way_delete(id);
+        way_delete(id, m_way_cache.get().timestamp());
         if (m_process_way) {
             get_mutex_and_call_lua_function(m_process_way, m_way_cache.get());
         }

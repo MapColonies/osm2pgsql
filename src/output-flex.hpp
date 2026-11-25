@@ -205,15 +205,17 @@ private:
     osmium::OSMObject const &
     check_and_get_context_object(flex_table_t const &table);
 
-    void node_delete(osmid_t id);
-    void way_delete(osmid_t id);
-    void relation_delete(osmid_t id);
+    void node_delete(osmid_t id, osmium::Timestamp timestamp);
+    void way_delete(osmid_t id, osmium::Timestamp timestamp);
+    void relation_delete(osmid_t id, osmium::Timestamp timestamp);
 
     void delete_from_table(table_connection_t *table_connection,
                            pg_conn_t const &db_connection,
-                           osmium::item_type type, osmid_t osm_id);
+                           osmium::item_type type, osmid_t osm_id,
+                           osmium::Timestamp timestamp);
 
-    void delete_from_tables(osmium::item_type type, osmid_t osm_id);
+    void delete_from_tables(osmium::item_type type, osmid_t osm_id,
+                            osmium::Timestamp timestamp);
 
     /**
      * Actually do expire from the geometries in the cache. Diff expire is

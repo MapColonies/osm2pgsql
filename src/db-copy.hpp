@@ -14,6 +14,8 @@
 #include "pgsql.hpp"
 #include "pgsql-params.hpp"
 
+#include <osmium/osm/timestamp.hpp>
+
 #include <cassert>
 #include <cstddef>
 #include <condition_variable>
@@ -26,16 +28,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-/**
- * SQL expression for the time an osm2pgsql run writes into history columns.
- * Every connection of one run gets the same value (see main()), so the
- * valid_to of a superseded row equals the valid_from of the row that
- * replaced it. Falls back to now() outside osm2pgsql.
- */
-inline constexpr char const *HISTORY_TIMESTAMP_SQL =
-    "COALESCE(NULLIF(current_setting('osm2pgsql.run_timestamp', true), '')"
-    "::timestamptz, now())";
 
 /**
  * Table information necessary for building SQL queries.
@@ -125,17 +117,22 @@ class db_deleter_by_type_and_id_t
     struct item_t
     {
         osmid_t osm_id;
+        /// Timestamp of the version replacing or deleting the object
+        osmium::Timestamp timestamp;
         char osm_type;
 
-        item_t(char t, osmid_t i) : osm_id(i), osm_type(t) {}
+        item_t(char t, osmid_t i, osmium::Timestamp ts)
+        : osm_id(i), timestamp(ts), osm_type(t)
+        {
+        }
     };
 
 public:
     bool has_data() const noexcept { return !m_deletables.empty(); }
 
-    void add(char type, osmid_t osm_id)
+    void add(char type, osmid_t osm_id, osmium::Timestamp timestamp)
     {
-        m_deletables.emplace_back(type, osm_id);
+        m_deletables.emplace_back(type, osm_id, timestamp);
         if (type != 'X') {
             m_has_type = true;
         }
@@ -148,6 +145,11 @@ public:
     bool is_full() const noexcept { return m_deletables.size() > MAX_ENTRIES; }
 
 private:
+    void move_rows_to_history(std::string const &table,
+                              std::string const &column,
+                              std::string const &history,
+                              pg_conn_t const &db_connection);
+
     /// Vector with object to delete before copying
     std::vector<item_t> m_deletables;
     bool m_has_type = false;

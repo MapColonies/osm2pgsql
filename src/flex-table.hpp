@@ -20,6 +20,7 @@
 #include "util.hpp"
 
 #include <osmium/osm/item_type.hpp>
+#include <osmium/osm/timestamp.hpp>
 
 #include <cassert>
 #include <chrono>
@@ -28,6 +29,7 @@
 #include <future>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -193,9 +195,26 @@ public:
 
     std::string build_sql_create_history_table() const;
 
-    std::string build_sql_dedup_history() const;
+    /**
+     * Remember that a version with this timestamp replaced or deleted rows
+     * of this table in this run. Called from every worker thread.
+     */
+    void note_replaced_at(osmium::Timestamp timestamp) const;
 
-    std::string build_sql_delete_empty_history() const;
+    /**
+     * Earliest and latest timestamp given to note_replaced_at() in this
+     * run, or two invalid timestamps if it was never called.
+     */
+    std::pair<osmium::Timestamp, osmium::Timestamp> replaced_range() const;
+
+    std::string build_sql_dedup_history(osmium::Timestamp first,
+                                        osmium::Timestamp last) const;
+
+    std::string build_sql_delete_empty_history(osmium::Timestamp first,
+                                               osmium::Timestamp last) const;
+
+    std::string build_sql_count_dropped_changes(osmium::Timestamp first,
+                                                osmium::Timestamp last) const;
 
     std::vector<std::string> build_sql_create_history_indexes() const;
 
@@ -312,6 +331,29 @@ private:
 
     bool m_has_history = false;
 
+    /// SQL pieces comparing a history row (h) with its live row (b).
+    struct history_comparison_t
+    {
+        std::string match;         ///< h and b have the same ids
+        std::string match_deleted; ///< d and b have the same ids
+        std::string ids;           ///< id columns of h
+        std::string hist;          ///< compared columns of h
+        std::string live;          ///< compared columns of b
+    };
+
+    history_comparison_t history_comparison() const;
+
+    struct replaced_range_t
+    {
+        std::mutex mutex;
+        osmium::Timestamp first;
+        osmium::Timestamp last;
+    };
+
+    /// Shared by the copies of this table in every worker thread.
+    std::shared_ptr<replaced_range_t> m_replaced_range =
+        std::make_shared<replaced_range_t>();
+
     partition_spec_t m_partition;
 
     partition_spec_t m_history_partition;
@@ -350,6 +392,10 @@ public:
 
     void stop(pg_conn_t const &db_connection, bool updateable, bool append);
 
+    void warn_about_dropped_changes(pg_conn_t const &db_connection,
+                                    osmium::Timestamp first,
+                                    osmium::Timestamp last) const;
+
     flex_table_t const &table() const noexcept { return *m_table; }
 
     void create_id_index(pg_conn_t const &db_connection);
@@ -372,7 +418,8 @@ public:
         return &m_copy_mgr;
     }
 
-    void delete_rows_with(osmium::item_type type, osmid_t id);
+    void delete_rows_with(osmium::item_type type, osmid_t id,
+                          osmium::Timestamp timestamp);
 
     reprojection_t const &proj() const noexcept
     {

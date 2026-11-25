@@ -124,3 +124,27 @@ Feature: History needs object attributes
             """
             History needs the timestamps of the source's versions. Use -x/--extra-attributes.
             """
+
+    Scenario: A version without a timestamp in a history table fails
+        Given the lua style
+            """
+            local points = osm2pgsql.define_node_table('osm2pgsql_test_points', {
+                { column = 'name', type = 'text' },
+                { column = 'geom', type = 'point', projection = 4326 },
+            }, { history = true })
+
+            function osm2pgsql.process_node(object)
+                points:insert({ name = object.tags.name, geom = object:as_point() })
+            end
+            """
+        And the OSM data
+            """
+            n11 v1 dV Tname=two x11.0 y11.0
+            """
+        When running osm2pgsql flex with parameters
+            | --slim | -c | -x |
+        Then execution fails
+        And the error output contains
+            """
+            Node 11 has no timestamp. History needs the timestamps of the source's versions.
+            """
