@@ -42,6 +42,7 @@ target_sources(osm2pgsql_lib PRIVATE
     middle-pgsql.cpp
     middle-ram.cpp
     middle.cpp
+    node-history.cpp
     node-locations.cpp
     node-persistent-cache.cpp
     ordered-index.cpp

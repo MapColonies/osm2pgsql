@@ -143,6 +143,8 @@ public:
     void node_add_history(osmium::Node const &node,
                           osmium::Timestamp valid_to) override;
     void way_add(osmium::Way *way) override;
+    void way_add_history(osmium::Way *way,
+                         osmium::Timestamp valid_to) override;
     void relation_add(osmium::Relation const &rel) override;
 
     void node_modify(osmium::Node const &node) override;
@@ -248,6 +250,10 @@ private:
     public:
         bool init(middle_query_t const &middle, osmid_t id);
         void init(osmium::Way *way);
+
+        /// Use a way whose nodes already have their locations.
+        void init_located(osmium::Way *way);
+
         std::size_t add_nodes(middle_query_t const &middle);
         osmium::Way const &get() const noexcept { return *m_way; }
 

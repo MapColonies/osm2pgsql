@@ -221,7 +221,7 @@ public:
         }
 
         if (has_latest()) {
-            auto const &latest = latest_version();
+            auto &latest = latest_version();
             if (latest.type() == object->type() &&
                 latest.id() == object->id()) {
                 m_saw_versions = true;
@@ -233,6 +233,10 @@ public:
             }
             m_latest.clear();
         }
+
+        // Earlier versions of ways need all nodes, so the switch to the next
+        // type happens when its first object is read, not processed.
+        start_type(object->type());
 
         m_latest.add_item(*object);
         m_latest.commit();
@@ -291,19 +295,26 @@ private:
                                      "you are not in append mode."};
         }
 
-        if (m_last_type != object->type()) {
-            if (m_last_type == osmium::item_type::node) {
-                m_osmdata->after_nodes();
-                m_progress->start_way_counter();
-            }
-            if (object->type() == osmium::item_type::relation) {
-                m_osmdata->after_ways();
-                m_progress->start_relation_counter();
-            }
-            m_last_type = object->type();
-        }
+        start_type(object->type());
 
         osmium::apply_item(*object, *m_osmdata, *m_progress);
+    }
+
+    void start_type(osmium::item_type type)
+    {
+        if (m_last_type == type) {
+            return;
+        }
+
+        if (m_last_type == osmium::item_type::node) {
+            m_osmdata->after_nodes();
+            m_progress->start_way_counter();
+        }
+        if (type == osmium::item_type::relation) {
+            m_osmdata->after_ways();
+            m_progress->start_relation_counter();
+        }
+        m_last_type = type;
     }
 
     osmdata_t *m_osmdata;

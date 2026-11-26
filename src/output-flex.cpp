@@ -37,6 +37,7 @@
 #include "util.hpp"
 #include "wkb.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <cstdlib>
@@ -695,6 +696,16 @@ void output_flex_t::way_cache_t::init(osmium::Way *way)
     m_way = way;
 }
 
+void output_flex_t::way_cache_t::init_located(osmium::Way *way)
+{
+    init(way);
+    m_num_way_nodes = static_cast<std::size_t>(
+        std::count_if(way->nodes().cbegin(), way->nodes().cend(),
+                      [](auto const &node_ref) {
+                          return node_ref.location().valid();
+                      }));
+}
+
 std::size_t output_flex_t::way_cache_t::add_nodes(middle_query_t const &middle)
 {
     if (m_num_way_nodes == std::numeric_limits<std::size_t>::max()) {
@@ -1178,6 +1189,25 @@ void output_flex_t::node_add_history(osmium::Node const &node,
         get_mutex_and_call_lua_function(func, node);
         m_history_valid_to = osmium::Timestamp{};
         m_context_node = nullptr;
+    }
+
+    // Earlier versions are not expired, they were never in the database.
+    m_geometry_cache.clear();
+}
+
+void output_flex_t::way_add_history(osmium::Way *way,
+                                    osmium::Timestamp valid_to)
+{
+    assert(way);
+
+    auto const &func =
+        way->tags().empty() ? m_process_untagged_way : m_process_way;
+
+    if (func) {
+        m_way_cache.init_located(way);
+        m_history_valid_to = valid_to;
+        get_mutex_and_call_lua_function(func, m_way_cache.get());
+        m_history_valid_to = osmium::Timestamp{};
     }
 
     // Earlier versions are not expired, they were never in the database.

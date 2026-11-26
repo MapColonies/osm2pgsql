@@ -101,6 +101,16 @@ public:
     {}
 
     virtual void way_add(osmium::Way *way) = 0;
+
+    /**
+     * Process an earlier version of a way on a create from a history file.
+     * Its nodes already have the locations of the way's time. It was valid
+     * until valid_to, the timestamp of the next version.
+     */
+    virtual void way_add_history(osmium::Way * /*way*/,
+                                 osmium::Timestamp /*valid_to*/)
+    {}
+
     virtual void relation_add(osmium::Relation const &rel) = 0;
 
     virtual void node_modify(osmium::Node const &node) = 0;
