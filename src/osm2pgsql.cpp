@@ -46,8 +46,12 @@ void show_memory_usage()
 
 file_info run(options_t const &options, properties_t *properties)
 {
-    auto const files = prepare_input_files(
-        options.input_files, options.input_format, options.append);
+    // A create with --history may read every version of an object.
+    bool const multiple_versions = !options.append && options.history;
+
+    auto const files =
+        prepare_input_files(options.input_files, options.input_format,
+                            options.append, multiple_versions);
 
     auto thread_pool = std::make_shared<thread_pool_t>(
         options.parallel_indexing ? options.num_procs : 1U);
@@ -71,7 +75,7 @@ file_info run(options_t const &options, properties_t *properties)
     // Processing: In this phase the input file(s) are read and parsed,
     // populating some of the tables.
     auto finfo = process_files(files, &osmdata, options.append,
-                               get_logger().show_progress());
+                               multiple_versions, get_logger().show_progress());
 
     show_memory_usage();
 
