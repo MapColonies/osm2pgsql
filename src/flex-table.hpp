@@ -213,6 +213,14 @@ public:
     std::string build_sql_delete_empty_history(osmium::Timestamp first,
                                                osmium::Timestamp last) const;
 
+    /**
+     * Merge history rows of an object that are identical and follow each
+     * other in time into one row. Only rows with valid_to between first and
+     * last are looked at.
+     */
+    std::string build_sql_merge_history(osmium::Timestamp first,
+                                        osmium::Timestamp last) const;
+
     std::string build_sql_count_dropped_changes(osmium::Timestamp first,
                                                 osmium::Timestamp last) const;
 
@@ -381,16 +389,28 @@ public:
       m_target(std::make_shared<db_target_descr_t>(
           table->schema(), table->name(), table->id_column_names(),
           table->build_sql_column_list())),
-      m_copy_mgr(copy_thread)
+      m_copy_mgr(copy_thread), m_history_copy_mgr(copy_thread)
     {
         if (table->has_history()) {
             m_target->set_history(table->full_history_name());
+            m_history_target = std::make_shared<db_target_descr_t>(
+                table->schema(), table->history_name(),
+                table->id_column_names(),
+                table->build_sql_column_list() + R"(,"valid_to")");
         }
     }
 
     void start(pg_conn_t const &db_connection, bool append) const;
 
     void stop(pg_conn_t const &db_connection, bool updateable, bool append);
+
+    /**
+     * Tidy up the history rows of versions replaced in this run: drop
+     * versions that were never valid and fold identical rows into the live
+     * row. With merge, identical history rows following each other are
+     * merged first (needed after a create from a history file).
+     */
+    void clean_up_history(pg_conn_t const &db_connection, bool merge) const;
 
     void warn_about_dropped_changes(pg_conn_t const &db_connection,
                                     osmium::Timestamp first,
@@ -407,15 +427,40 @@ public:
     pg_result_t get_geoms_by_id(pg_conn_t const &db_connection,
                                 osmium::item_type type, osmid_t id) const;
 
-    void flush() { m_copy_mgr.flush(); }
+    void flush()
+    {
+        m_copy_mgr.flush();
+        m_history_copy_mgr.flush();
+    }
 
-    void sync() { m_copy_mgr.sync(); }
+    void sync()
+    {
+        m_copy_mgr.sync();
+        m_history_copy_mgr.sync();
+    }
 
     void new_line() { m_copy_mgr.new_line(m_target); }
 
     db_copy_mgr_t<db_deleter_by_type_and_id_t> *copy_mgr() noexcept
     {
         return &m_copy_mgr;
+    }
+
+    /**
+     * Start a row of an earlier version, written straight to the history
+     * table on a create from a history file. The caller adds the live
+     * table's columns and then valid_to.
+     */
+    void new_history_line(osmium::Timestamp valid_to)
+    {
+        assert(m_history_target);
+        m_history_copy_mgr.new_line(m_history_target);
+        table().note_replaced_at(valid_to);
+    }
+
+    db_copy_mgr_t<db_deleter_by_type_and_id_t> *history_copy_mgr() noexcept
+    {
+        return &m_history_copy_mgr;
     }
 
     void delete_rows_with(osmium::item_type type, osmid_t id,
@@ -453,6 +498,11 @@ private:
      * to the database server.
      */
     db_copy_mgr_t<db_deleter_by_type_and_id_t> m_copy_mgr;
+
+    /// Target and copy manager for rows of earlier versions, written to the
+    /// history table on a create from a history file.
+    std::shared_ptr<db_target_descr_t> m_history_target;
+    db_copy_mgr_t<db_deleter_by_type_and_id_t> m_history_copy_mgr;
 
     task_result_t m_task_result;
 

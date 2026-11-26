@@ -808,12 +808,23 @@ int output_flex_t::table_insert()
     auto const &object = check_and_get_context_object(table);
     osmid_t const id = table.map_id(object.type(), object.id());
 
-    if (table.with_id_cache()) {
+    bool const earlier_version = m_history_valid_to.valid();
+    if (earlier_version && !table.has_history()) {
+        lua_pushboolean(lua_state(), true);
+        return 1;
+    }
+
+    if (table.with_id_cache() && !earlier_version) {
         get_id_cache(table).push_back(id);
     }
 
-    table_connection.new_line();
-    auto *copy_mgr = table_connection.copy_mgr();
+    auto *copy_mgr = earlier_version ? table_connection.history_copy_mgr()
+                                     : table_connection.copy_mgr();
+    if (earlier_version) {
+        table_connection.new_history_line(m_history_valid_to);
+    } else {
+        table_connection.new_line();
+    }
 
     try {
         for (auto const &column : table_connection.table().columns()) {
@@ -832,6 +843,9 @@ int output_flex_t::table_insert()
                 flex_write_column(lua_state(), &m_geometry_cache, copy_mgr,
                                   column);
             }
+        }
+        if (earlier_version) {
+            copy_mgr->add_column(m_history_valid_to.to_iso());
         }
         table_connection.increment_insert_counter();
     } catch (not_null_exception_t const &e) {
@@ -1150,6 +1164,24 @@ void output_flex_t::node_add(osmium::Node const &node)
     }
 
     expire_geoms_from_cache();
+}
+
+void output_flex_t::node_add_history(osmium::Node const &node,
+                                     osmium::Timestamp valid_to)
+{
+    auto const &func =
+        node.tags().empty() ? m_process_untagged_node : m_process_node;
+
+    if (func) {
+        m_context_node = &node;
+        m_history_valid_to = valid_to;
+        get_mutex_and_call_lua_function(func, node);
+        m_history_valid_to = osmium::Timestamp{};
+        m_context_node = nullptr;
+    }
+
+    // Earlier versions are not expired, they were never in the database.
+    m_geometry_cache.clear();
 }
 
 void output_flex_t::way_add(osmium::Way *way)

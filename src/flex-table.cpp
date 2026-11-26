@@ -465,6 +465,74 @@ flex_table_t::build_sql_delete_empty_history(osmium::Timestamp first,
                        full_history_name(), first.to_iso(), last.to_iso());
 }
 
+std::string flex_table_t::build_sql_merge_history(osmium::Timestamp first,
+                                                  osmium::Timestamp last) const
+{
+    assert(m_has_history);
+
+    util::string_joiner_t ids{','};
+    util::string_joiner_t values{','};
+    util::string_joiner_t h_values{','};
+    util::string_joiner_t select{','};
+    std::string runs_match;
+    std::string rows_match;
+
+    for (auto const &column : m_columns) {
+        if (column.create_only()) {
+            continue;
+        }
+        if (column.name() == "valid_from") {
+            select.add("d.merged_from");
+            continue;
+        }
+        select.add(fmt::format(R"(d."{}")", column.name()));
+        if (column.type() == table_column_type::id_type ||
+            column.type() == table_column_type::id_num) {
+            ids.add(fmt::format(R"("{}")", column.name()));
+            runs_match += fmt::format(R"(u."{0}" = m."{0}" AND )", column.name());
+            rows_match += fmt::format(R"(h."{0}" = u."{0}" AND )", column.name());
+            continue;
+        }
+        values.add(fmt::format(R"("{}")", column.name()));
+        h_values.add(fmt::format(R"(h."{}")", column.name()));
+    }
+    select.add("d.merged_to");
+
+    if (runs_match.empty() || values.empty()) {
+        return {};
+    }
+
+    // Rows of an object with the same values form a run as long as each one
+    // starts where the one before ended. The rows of a run of several are
+    // replaced by one row spanning all of them, as a version that changed
+    // nothing was not a change.
+    return fmt::format(
+        FMT_STRING(
+            R"(WITH v AS (SELECT {1}, ROW({2})::text AS row_key,)"
+            R"( "valid_from", "valid_to",)"
+            R"( CASE WHEN lag("valid_to") OVER w = "valid_from")"
+            R"( THEN 0 ELSE 1 END AS starts_run FROM {0})"
+            R"( WHERE "valid_to" BETWEEN '{3}' AND '{4}')"
+            R"( WINDOW w AS (PARTITION BY {1}, ROW({2})::text)"
+            R"( ORDER BY "valid_from")),)"
+            R"( u AS (SELECT *, sum(starts_run) OVER (PARTITION BY {1}, row_key)"
+            R"( ORDER BY "valid_from") AS run FROM v),)"
+            R"( m AS (SELECT {1}, row_key, run, min("valid_from") AS merged_from,)"
+            R"( max("valid_to") AS merged_to FROM u GROUP BY {1}, row_key, run)"
+            R"( HAVING count(*) > 1),)"
+            R"( d AS (DELETE FROM {0} h USING u JOIN m ON {5})"
+            R"(u.row_key = m.row_key AND u.run = m.run)"
+            R"( WHERE {6}ROW({7})::text = u.row_key)"
+            R"( AND h."valid_from" = u."valid_from")"
+            R"( AND h."valid_to" = u."valid_to")"
+            R"( RETURNING h.*, m.row_key, m.merged_from, m.merged_to))"
+            R"( INSERT INTO {0} ({8},"valid_to"))"
+            R"( SELECT DISTINCT ON ({1}, d.merged_from, d.row_key) {9})"
+            R"( FROM d)"),
+        full_history_name(), ids(), values(), first.to_iso(), last.to_iso(),
+        runs_match, rows_match, h_values(), build_sql_column_list(), select());
+}
+
 std::string flex_table_t::build_sql_column_list() const
 {
     assert(!m_columns.empty());
@@ -631,23 +699,37 @@ void table_connection_t::warn_about_dropped_changes(
     }
 }
 
+void table_connection_t::clean_up_history(pg_conn_t const &db_connection,
+                                          bool merge) const
+{
+    auto const [first, last] = table().replaced_range();
+    if (!table().has_history() || !table().has_id_column() || !first.valid()) {
+        return;
+    }
+
+    if (merge) {
+        log_info("Merging history of table '{}'...", table().name());
+        auto const sql = table().build_sql_merge_history(first, last);
+        if (!sql.empty()) {
+            db_connection.exec(sql);
+        }
+    }
+
+    warn_about_dropped_changes(db_connection, first, last);
+    db_connection.exec(table().build_sql_delete_empty_history(first, last));
+    auto const sql = table().build_sql_dedup_history(first, last);
+    if (!sql.empty()) {
+        db_connection.exec(sql);
+    }
+}
+
 void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
                               bool append)
 {
-    m_copy_mgr.sync();
+    sync();
 
     if (append) {
-        auto const [first, last] = table().replaced_range();
-        if (table().has_history() && table().has_id_column() &&
-            first.valid()) {
-            warn_about_dropped_changes(db_connection, first, last);
-            db_connection.exec(
-                table().build_sql_delete_empty_history(first, last));
-            auto const sql = table().build_sql_dedup_history(first, last);
-            if (!sql.empty()) {
-                db_connection.exec(sql);
-            }
-        }
+        clean_up_history(db_connection, false);
         return;
     }
 
@@ -699,6 +781,8 @@ void table_connection_t::stop(pg_conn_t const &db_connection, bool updateable,
             enable_check_trigger(db_connection, table());
         }
     }
+
+    clean_up_history(db_connection, true);
 
     if (table().indexes().empty()) {
         log_info("No indexes to create on table '{}'.", table().name());

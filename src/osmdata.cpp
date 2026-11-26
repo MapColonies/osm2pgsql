@@ -72,6 +72,22 @@ void osmdata_t::node(osmium::Node const &node)
     }
 }
 
+void osmdata_t::earlier_version(osmium::OSMObject const &object,
+                                osmium::Timestamp valid_to)
+{
+    if (object.type() != osmium::item_type::node) {
+        return;
+    }
+
+    auto const &node = static_cast<osmium::Node const &>(object);
+    if (!node.location().valid() ||
+        (m_bbox.valid() && !m_bbox.contains(node.location()))) {
+        return;
+    }
+
+    m_output->node_add_history(node, valid_to);
+}
+
 void osmdata_t::after_nodes()
 {
     m_mid->after_nodes();

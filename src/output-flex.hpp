@@ -140,6 +140,8 @@ public:
     void select_relation_members(osmid_t id) override;
 
     void node_add(osmium::Node const &node) override;
+    void node_add_history(osmium::Node const &node,
+                          osmium::Timestamp valid_to) override;
     void way_add(osmium::Way *way) override;
     void relation_add(osmium::Relation const &rel) override;
 
@@ -352,6 +354,13 @@ private:
      * insert() command.
      */
     bool m_disable_insert = false;
+
+    /**
+     * Set while an earlier version of an object is processed on a create
+     * from a history file: insert() then writes to history tables only, with
+     * this as valid_to.
+     */
+    osmium::Timestamp m_history_valid_to;
 };
 
 int lua_trampoline_table_insert(lua_State *lua_state);

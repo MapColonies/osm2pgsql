@@ -91,6 +91,15 @@ public:
     virtual void select_relation_members(osmid_t) {}
 
     virtual void node_add(osmium::Node const &node) = 0;
+
+    /**
+     * Process an earlier version of a node on a create from a history file.
+     * It was valid until valid_to, the timestamp of the next version.
+     */
+    virtual void node_add_history(osmium::Node const & /*node*/,
+                                  osmium::Timestamp /*valid_to*/)
+    {}
+
     virtual void way_add(osmium::Way *way) = 0;
     virtual void relation_add(osmium::Relation const &rel) = 0;
 

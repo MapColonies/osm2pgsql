@@ -225,6 +225,9 @@ public:
             if (latest.type() == object->type() &&
                 latest.id() == object->id()) {
                 m_saw_versions = true;
+                if (latest.visible()) {
+                    m_osmdata->earlier_version(latest, object->timestamp());
+                }
             } else {
                 process_latest_version();
             }

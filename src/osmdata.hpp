@@ -48,6 +48,14 @@ public:
     void way(osmium::Way &way);
     void relation(osmium::Relation const &rel);
 
+    /**
+     * Process an earlier version of an object on a create from a history
+     * file. It was valid until valid_to, the timestamp of the next version.
+     * Only nodes are handled so far.
+     */
+    void earlier_version(osmium::OSMObject const &object,
+                         osmium::Timestamp valid_to);
+
     void after_nodes();
     void after_ways();
     void after_relations();
