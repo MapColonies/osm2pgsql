@@ -140,7 +140,11 @@ public:
     void select_relation_members(osmid_t id) override;
 
     void node_add(osmium::Node const &node) override;
+    void node_add_history(osmium::Node const &node,
+                          osmium::Timestamp valid_to) override;
     void way_add(osmium::Way *way) override;
+    void way_add_history(osmium::Way *way,
+                         osmium::Timestamp valid_to) override;
     void relation_add(osmium::Relation const &rel) override;
 
     void node_modify(osmium::Node const &node) override;
@@ -205,15 +209,17 @@ private:
     osmium::OSMObject const &
     check_and_get_context_object(flex_table_t const &table);
 
-    void node_delete(osmid_t id);
-    void way_delete(osmid_t id);
-    void relation_delete(osmid_t id);
+    void node_delete(osmid_t id, osmium::Timestamp timestamp);
+    void way_delete(osmid_t id, osmium::Timestamp timestamp);
+    void relation_delete(osmid_t id, osmium::Timestamp timestamp);
 
     void delete_from_table(table_connection_t *table_connection,
                            pg_conn_t const &db_connection,
-                           osmium::item_type type, osmid_t osm_id);
+                           osmium::item_type type, osmid_t osm_id,
+                           osmium::Timestamp timestamp);
 
-    void delete_from_tables(osmium::item_type type, osmid_t osm_id);
+    void delete_from_tables(osmium::item_type type, osmid_t osm_id,
+                            osmium::Timestamp timestamp);
 
     /**
      * Actually do expire from the geometries in the cache. Diff expire is
@@ -244,6 +250,10 @@ private:
     public:
         bool init(middle_query_t const &middle, osmid_t id);
         void init(osmium::Way *way);
+
+        /// Use a way whose nodes already have their locations.
+        void init_located(osmium::Way *way);
+
         std::size_t add_nodes(middle_query_t const &middle);
         osmium::Way const &get() const noexcept { return *m_way; }
 
@@ -350,6 +360,13 @@ private:
      * insert() command.
      */
     bool m_disable_insert = false;
+
+    /**
+     * Set while an earlier version of an object is processed on a create
+     * from a history file: insert() then writes to history tables only, with
+     * this as valid_to.
+     */
+    osmium::Timestamp m_history_valid_to;
 };
 
 int lua_trampoline_table_insert(lua_State *lua_state);

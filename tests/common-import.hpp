@@ -48,7 +48,7 @@ inline void parse_file(options_t const &options,
         filepath += options.input_files[0];
     }
     osmium::io::File const file{filepath};
-    process_files({file}, &osmdata, options.append, false);
+    process_files({file}, &osmdata, options.append, false, false);
 
     if (do_stop) {
         osmdata.stop();
@@ -151,7 +151,7 @@ public:
         for (auto const &data : input_data) {
             files.emplace_back(data.data(), data.size(), format);
         }
-        process_files(files, &osmdata, options.append, false);
+        process_files(files, &osmdata, options.append, false, false);
 
         osmdata.stop();
     }

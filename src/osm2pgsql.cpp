@@ -46,8 +46,12 @@ void show_memory_usage()
 
 file_info run(options_t const &options, properties_t *properties)
 {
-    auto const files = prepare_input_files(
-        options.input_files, options.input_format, options.append);
+    // A create with --history may read every version of an object.
+    bool const multiple_versions = !options.append && options.history;
+
+    auto const files =
+        prepare_input_files(options.input_files, options.input_format,
+                            options.append, multiple_versions);
 
     auto thread_pool = std::make_shared<thread_pool_t>(
         options.parallel_indexing ? options.num_procs : 1U);
@@ -71,7 +75,7 @@ file_info run(options_t const &options, properties_t *properties)
     // Processing: In this phase the input file(s) are read and parsed,
     // populating some of the tables.
     auto finfo = process_files(files, &osmdata, options.append,
-                               get_logger().show_progress());
+                               multiple_versions, get_logger().show_progress());
 
     show_memory_usage();
 
@@ -102,6 +106,11 @@ void check_db(options_t const &options)
 void set_up_properties(properties_t *properties, options_t const &options)
 {
     properties->set_bool("attributes", options.extra_attributes);
+    // Only stored when set, so imports without history keep the same
+    // properties as upstream osm2pgsql.
+    if (options.history) {
+        properties->set_bool("history", true);
+    }
 
     if (options.flat_node_file.empty()) {
         properties->set_string("flat_node_file", "");
@@ -171,6 +180,38 @@ void check_attributes(properties_t const &properties, options_t *options)
     if (with_attributes) {
         log_info("Updating with attributes (same as on import).");
         options->extra_attributes = true;
+    }
+}
+
+void check_history(properties_t const &properties, options_t *options)
+{
+    bool const with_history = properties.get_bool("history", false);
+
+    if (options->history) {
+        if (!with_history) {
+            throw std::runtime_error{
+                "Can not update with --history because original import was"
+                " without it."};
+        }
+        return;
+    }
+
+    if (with_history) {
+        log_info("Updating with history (same as on import).");
+        options->history = true;
+    }
+}
+
+/**
+ * History intervals use the timestamps of the source's versions, which
+ * osm2pgsql only reads with --extra-attributes.
+ */
+void check_history_needs_attributes(options_t const &options)
+{
+    if (options.history && !options.extra_attributes) {
+        throw std::runtime_error{
+            "History needs the timestamps of the source's versions."
+            " Use -x/--extra-attributes."};
     }
 }
 
@@ -301,6 +342,7 @@ void check_and_update_properties(properties_t *properties, options_t *options)
 {
     check_updatable(*properties);
     check_attributes(*properties, options);
+    check_history(*properties, options);
     check_and_update_flat_node_file(properties, options);
     check_prefix(*properties, options);
     check_db_format(*properties, options);
@@ -358,6 +400,7 @@ int main(int argc, char *argv[])
             }
 
             check_and_update_properties(&properties, &options);
+            check_history_needs_attributes(options);
             properties.store();
 
             auto const finfo = run(options, &properties);
@@ -375,6 +418,7 @@ int main(int argc, char *argv[])
             }
         } else {
             set_option_defaults(&options);
+            check_history_needs_attributes(options);
             set_up_properties(&properties, options);
             auto const finfo = run(options, &properties);
             store_data_properties(&properties, finfo);

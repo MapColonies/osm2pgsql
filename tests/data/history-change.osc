@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osmChange version="0.6" generator="osm2pgsql-test">
+  <create>
+    <node id="10" version="1" timestamp="2024-01-01T00:00:00Z" lat="10" lon="10">
+      <tag k="name" v="one"/>
+    </node>
+  </create>
+</osmChange>

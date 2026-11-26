@@ -20,6 +20,7 @@
 #include "util.hpp"
 
 #include <osmium/osm/item_type.hpp>
+#include <osmium/osm/timestamp.hpp>
 
 #include <cassert>
 #include <chrono>
@@ -28,6 +29,7 @@
 #include <future>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -51,6 +53,16 @@ enum class flex_table_index_type : uint8_t
 /**
  * An output table (in the SQL sense) for the flex backend.
  */
+struct partition_spec_t
+{
+    std::string column;
+    std::string method;
+    std::string interval;
+    int count = 0;
+
+    bool enabled() const noexcept { return !column.empty(); }
+};
+
 class flex_table_t
 {
 
@@ -174,6 +186,65 @@ public:
     std::string full_name() const;
     std::string full_tmp_name() const;
 
+    bool has_history() const noexcept { return m_has_history; }
+
+    void set_has_history(bool value) noexcept { m_has_history = value; }
+
+    std::string history_name() const { return m_name + "_history"; }
+    std::string full_history_name() const;
+
+    std::string build_sql_create_history_table() const;
+
+    /**
+     * Remember that a version with this timestamp replaced or deleted rows
+     * of this table in this run. Called from every worker thread.
+     */
+    void note_replaced_at(osmium::Timestamp timestamp) const;
+
+    /**
+     * Earliest and latest timestamp given to note_replaced_at() in this
+     * run, or two invalid timestamps if it was never called.
+     */
+    std::pair<osmium::Timestamp, osmium::Timestamp> replaced_range() const;
+
+    std::string build_sql_dedup_history(osmium::Timestamp first,
+                                        osmium::Timestamp last) const;
+
+    std::string build_sql_delete_empty_history(osmium::Timestamp first,
+                                               osmium::Timestamp last) const;
+
+    /**
+     * Merge history rows of an object that are identical and follow each
+     * other in time into one row. Only rows with valid_to between first and
+     * last are looked at.
+     */
+    std::string build_sql_merge_history(osmium::Timestamp first,
+                                        osmium::Timestamp last) const;
+
+    std::string build_sql_count_dropped_changes(osmium::Timestamp first,
+                                                osmium::Timestamp last) const;
+
+    std::vector<std::string> build_sql_create_history_indexes() const;
+
+    partition_spec_t const &partition() const noexcept { return m_partition; }
+
+    void set_partition(partition_spec_t spec) { m_partition = std::move(spec); }
+
+    partition_spec_t const &history_partition() const noexcept
+    {
+        return m_history_partition;
+    }
+
+    void set_history_partition(partition_spec_t spec)
+    {
+        m_history_partition = std::move(spec);
+    }
+
+    std::vector<std::string>
+    build_sql_create_partitions(partition_spec_t const &spec,
+                                std::string const &table_name,
+                                bool with_fixed) const;
+
     bool has_multiple_geom_columns() const noexcept
     {
         return m_has_multiple_geom_columns;
@@ -266,6 +337,35 @@ private:
     /// Does this table have more than one geometry column?
     bool m_has_multiple_geom_columns = false;
 
+    bool m_has_history = false;
+
+    /// SQL pieces comparing a history row (h) with its live row (b).
+    struct history_comparison_t
+    {
+        std::string match;         ///< h and b have the same ids
+        std::string match_deleted; ///< d and b have the same ids
+        std::string ids;           ///< id columns of h
+        std::string hist;          ///< compared columns of h
+        std::string live;          ///< compared columns of b
+    };
+
+    history_comparison_t history_comparison() const;
+
+    struct replaced_range_t
+    {
+        std::mutex mutex;
+        osmium::Timestamp first;
+        osmium::Timestamp last;
+    };
+
+    /// Shared by the copies of this table in every worker thread.
+    std::shared_ptr<replaced_range_t> m_replaced_range =
+        std::make_shared<replaced_range_t>();
+
+    partition_spec_t m_partition;
+
+    partition_spec_t m_history_partition;
+
     /// Always build the id index, not only when it is needed for updates?
     bool m_always_build_id_index = false;
 
@@ -289,13 +389,32 @@ public:
       m_target(std::make_shared<db_target_descr_t>(
           table->schema(), table->name(), table->id_column_names(),
           table->build_sql_column_list())),
-      m_copy_mgr(copy_thread)
+      m_copy_mgr(copy_thread), m_history_copy_mgr(copy_thread)
     {
+        if (table->has_history()) {
+            m_target->set_history(table->full_history_name());
+            m_history_target = std::make_shared<db_target_descr_t>(
+                table->schema(), table->history_name(),
+                table->id_column_names(),
+                table->build_sql_column_list() + R"(,"valid_to")");
+        }
     }
 
     void start(pg_conn_t const &db_connection, bool append) const;
 
     void stop(pg_conn_t const &db_connection, bool updateable, bool append);
+
+    /**
+     * Tidy up the history rows of versions replaced in this run: drop
+     * versions that were never valid and fold identical rows into the live
+     * row. With merge, identical history rows following each other are
+     * merged first (needed after a create from a history file).
+     */
+    void clean_up_history(pg_conn_t const &db_connection, bool merge) const;
+
+    void warn_about_dropped_changes(pg_conn_t const &db_connection,
+                                    osmium::Timestamp first,
+                                    osmium::Timestamp last) const;
 
     flex_table_t const &table() const noexcept { return *m_table; }
 
@@ -308,9 +427,17 @@ public:
     pg_result_t get_geoms_by_id(pg_conn_t const &db_connection,
                                 osmium::item_type type, osmid_t id) const;
 
-    void flush() { m_copy_mgr.flush(); }
+    void flush()
+    {
+        m_copy_mgr.flush();
+        m_history_copy_mgr.flush();
+    }
 
-    void sync() { m_copy_mgr.sync(); }
+    void sync()
+    {
+        m_copy_mgr.sync();
+        m_history_copy_mgr.sync();
+    }
 
     void new_line() { m_copy_mgr.new_line(m_target); }
 
@@ -319,7 +446,25 @@ public:
         return &m_copy_mgr;
     }
 
-    void delete_rows_with(osmium::item_type type, osmid_t id);
+    /**
+     * Start a row of an earlier version, written straight to the history
+     * table on a create from a history file. The caller adds the live
+     * table's columns and then valid_to.
+     */
+    void new_history_line(osmium::Timestamp valid_to)
+    {
+        assert(m_history_target);
+        m_history_copy_mgr.new_line(m_history_target);
+        table().note_replaced_at(valid_to);
+    }
+
+    db_copy_mgr_t<db_deleter_by_type_and_id_t> *history_copy_mgr() noexcept
+    {
+        return &m_history_copy_mgr;
+    }
+
+    void delete_rows_with(osmium::item_type type, osmid_t id,
+                          osmium::Timestamp timestamp);
 
     reprojection_t const &proj() const noexcept
     {
@@ -353,6 +498,11 @@ private:
      * to the database server.
      */
     db_copy_mgr_t<db_deleter_by_type_and_id_t> m_copy_mgr;
+
+    /// Target and copy manager for rows of earlier versions, written to the
+    /// history table on a create from a history file.
+    std::shared_ptr<db_target_descr_t> m_history_target;
+    db_copy_mgr_t<db_deleter_by_type_and_id_t> m_history_copy_mgr;
 
     task_result_t m_task_result;
 

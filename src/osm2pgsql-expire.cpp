@@ -426,7 +426,7 @@ int main(int argc, char *argv[])
 
             std::vector<osmium::io::File> files;
             files.emplace_back(cfg.input_file);
-            process_files(files, &osmdata, false, false);
+            process_files(files, &osmdata, false, false, false);
 
             output->print(cfg.format);
         } else {

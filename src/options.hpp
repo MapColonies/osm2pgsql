@@ -130,6 +130,7 @@ struct options_t
     bool extra_attributes = false;
     bool keep_coastlines = false;
     bool droptemp = false; ///< drop slim mode temp tables after act
+    bool history = false;
 
     /// only copy rows that match an explicitly listed key
     bool hstore_match_only = false;

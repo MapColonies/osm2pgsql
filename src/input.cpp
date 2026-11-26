@@ -21,7 +21,8 @@
 #include "osmdata.hpp"
 #include "progress-display.hpp"
 
-type_id check_input(type_id const &last, type_id curr)
+type_id check_input(type_id const &last, type_id curr,
+                    bool multiple_versions)
 {
     if (curr.id < 0) {
         throw fmt_error("Negative OSM object ids are not allowed: {} id {}.",
@@ -39,9 +40,20 @@ type_id check_input(type_id const &last, type_id curr)
                             last.id);
         }
 
+        if (!multiple_versions) {
+            throw fmt_error("Input data is not ordered:"
+                            " {} id {} appears more than once.",
+                            osmium::item_type_to_name(last.type), curr.id);
+        }
+
+        if (last.version < curr.version) {
+            return curr;
+        }
+
         throw fmt_error("Input data is not ordered:"
-                        " {} id {} appears more than once.",
-                        osmium::item_type_to_name(last.type), curr.id);
+                        " {} id {} version {} after version {}.",
+                        osmium::item_type_to_name(last.type), curr.id,
+                        curr.version, last.version);
     }
 
     if (item_type_to_nwr_index(last.type) <=
@@ -54,9 +66,11 @@ type_id check_input(type_id const &last, type_id curr)
                     osmium::item_type_to_name(last.type));
 }
 
-type_id check_input(type_id const &last, osmium::OSMObject const &object)
+type_id check_input(type_id const &last, osmium::OSMObject const &object,
+                    bool multiple_versions)
 {
-    return check_input(last, {object.type(), object.id()});
+    return check_input(last, {object.type(), object.id(), object.version()},
+                       multiple_versions);
 }
 
 namespace {
@@ -68,11 +82,12 @@ namespace {
 class data_source_t
 {
 public:
-    explicit data_source_t(osmium::io::File const &file)
-    : m_reader(std::make_unique<osmium::io::Reader>(file))
+    data_source_t(osmium::io::File const &file, bool multiple_versions)
+    : m_reader(std::make_unique<osmium::io::Reader>(file)),
+      m_multiple_versions(multiple_versions)
     {
         get_next_nonempty_buffer();
-        m_last = check_input(m_last, *m_it);
+        m_last = check_input(m_last, *m_it, m_multiple_versions);
     }
 
     bool empty() const noexcept { return !m_buffer; }
@@ -88,7 +103,7 @@ public:
             }
         }
 
-        m_last = check_input(m_last, *m_it);
+        m_last = check_input(m_last, *m_it, m_multiple_versions);
         return true;
     }
 
@@ -126,6 +141,7 @@ private:
     iterator m_it;
     iterator m_end;
     type_id m_last = {osmium::item_type::node, 0};
+    bool m_multiple_versions;
 
 }; // class data_source_t
 
@@ -169,6 +185,12 @@ public:
         return !(lhs == rhs);
     }
 
+    bool same_version(queue_element_t const &other) const noexcept
+    {
+        return *this == other &&
+               object().version() == other.object().version();
+    }
+
 private:
     osmium::OSMObject *m_object;
     data_source_t *m_source;
@@ -179,37 +201,62 @@ class input_context_t
 {
 public:
     input_context_t(osmdata_t *osmdata, progress_display_t *progress,
-                    bool append)
-    : m_osmdata(osmdata), m_progress(progress), m_append(append)
+                    bool append, bool multiple_versions)
+    : m_osmdata(osmdata), m_progress(progress), m_append(append),
+      m_multiple_versions(multiple_versions)
     {
         assert(osmdata);
         assert(progress);
     }
 
+    /**
+     * Process an object. With multiple versions it is held back until the
+     * next object shows whether a later version of it follows.
+     */
     void apply(osmium::OSMObject *object)
     {
-        if (!m_append && object->deleted()) {
-            throw std::runtime_error{"Input file contains deleted objects but "
-                                     "you are not in append mode."};
+        if (!m_multiple_versions) {
+            process(object);
+            return;
         }
 
-        if (m_last_type != object->type()) {
-            if (m_last_type == osmium::item_type::node) {
-                m_osmdata->after_nodes();
-                m_progress->start_way_counter();
+        if (has_latest()) {
+            auto &latest = latest_version();
+            if (latest.type() == object->type() &&
+                latest.id() == object->id()) {
+                m_saw_versions = true;
+                if (latest.visible()) {
+                    m_osmdata->earlier_version(latest, object->timestamp());
+                }
+            } else {
+                process_latest_version();
             }
-            if (object->type() == osmium::item_type::relation) {
-                m_osmdata->after_ways();
-                m_progress->start_relation_counter();
-            }
-            m_last_type = object->type();
+            m_latest.clear();
         }
 
-        osmium::apply_item(*object, *m_osmdata, *m_progress);
+        // Earlier versions of ways need all nodes, so the switch to the next
+        // type happens when its first object is read, not processed.
+        start_type(object->type());
+
+        m_latest.add_item(*object);
+        m_latest.commit();
     }
 
     void eof()
     {
+        if (m_multiple_versions) {
+            if (has_latest()) {
+                process_latest_version();
+            }
+            if (m_saw_versions) {
+                log_info("Input holds several versions of objects:"
+                         " filling history from it.");
+            } else {
+                log_info("Input holds one version per object:"
+                         " history starts empty.");
+            }
+        }
+
         switch (m_last_type) {
         case osmium::item_type::node:
             m_osmdata->after_nodes();
@@ -226,14 +273,66 @@ public:
     }
 
 private:
+    bool has_latest() const noexcept { return m_latest.committed() != 0; }
+
+    osmium::OSMObject &latest_version()
+    {
+        return *m_latest.begin<osmium::OSMObject>();
+    }
+
+    void process_latest_version()
+    {
+        auto &latest = latest_version();
+        if (latest.visible()) {
+            process(&latest);
+        }
+    }
+
+    void process(osmium::OSMObject *object)
+    {
+        if (!m_append && object->deleted()) {
+            throw std::runtime_error{"Input file contains deleted objects but "
+                                     "you are not in append mode."};
+        }
+
+        start_type(object->type());
+
+        osmium::apply_item(*object, *m_osmdata, *m_progress);
+    }
+
+    void start_type(osmium::item_type type)
+    {
+        if (m_last_type == type) {
+            return;
+        }
+
+        if (m_last_type == osmium::item_type::node) {
+            m_osmdata->after_nodes();
+            m_progress->start_way_counter();
+        }
+        if (type == osmium::item_type::relation) {
+            m_osmdata->after_ways();
+            m_progress->start_relation_counter();
+        }
+        m_last_type = type;
+    }
+
     osmdata_t *m_osmdata;
     progress_display_t *m_progress;
     osmium::item_type m_last_type = osmium::item_type::node;
     bool m_append;
+    bool m_multiple_versions;
+
+    /// The latest version seen so far of the current object.
+    osmium::memory::Buffer m_latest{
+        1024, osmium::memory::Buffer::auto_grow::yes};
+
+    bool m_saw_versions = false;
 }; // class input_context_t
 
 file_info process_single_file(osmium::io::File const &file, osmdata_t *osmdata,
-                              progress_display_t *progress, bool append)
+                              progress_display_t *progress, bool append,
+                              bool multiple_versions)
 {
     file_info finfo;
 
@@ -241,10 +340,10 @@ file_info process_single_file(osmium::io::File const &file, osmdata_t *osmdata,
     finfo.header = reader.header();
     type_id last{osmium::item_type::node, 0};
 
-    input_context_t ctx{osmdata, progress, append};
+    input_context_t ctx{osmdata, progress, append, multiple_versions};
     while (osmium::memory::Buffer buffer = reader.read()) {
         for (auto &object : buffer.select<osmium::OSMObject>()) {
-            last = check_input(last, object);
+            last = check_input(last, object, multiple_versions);
             ctx.apply(&object);
             if (object.timestamp() > finfo.last_timestamp) {
                 finfo.last_timestamp = object.timestamp();
@@ -260,7 +359,8 @@ file_info process_single_file(osmium::io::File const &file, osmdata_t *osmdata,
 
 file_info process_multiple_files(std::vector<osmium::io::File> const &files,
                                  osmdata_t *osmdata,
-                                 progress_display_t *progress, bool append)
+                                 progress_display_t *progress, bool append,
+                                 bool multiple_versions)
 {
     file_info finfo;
 
@@ -270,18 +370,24 @@ file_info process_multiple_files(std::vector<osmium::io::File> const &files,
     std::priority_queue<queue_element_t> queue;
 
     for (osmium::io::File const &file : files) {
-        data_sources.emplace_back(file);
+        data_sources.emplace_back(file, multiple_versions);
 
         if (!data_sources.back().empty()) {
             queue.emplace(data_sources.back().get(), &data_sources.back());
         }
     }
 
-    input_context_t ctx{osmdata, progress, append};
+    input_context_t ctx{osmdata, progress, append, multiple_versions};
     while (!queue.empty()) {
         auto element = queue.top();
         queue.pop();
-        if (queue.empty() || element != queue.top()) {
+        // The same object in several files is processed once. With multiple
+        // versions that applies to each version.
+        bool const repeated =
+            !queue.empty() && (multiple_versions
+                                   ? element.same_version(queue.top())
+                                   : element == queue.top());
+        if (!repeated) {
             ctx.apply(&element.object());
             if (element.object().timestamp() > finfo.last_timestamp) {
                 finfo.last_timestamp = element.object().timestamp();
@@ -306,7 +412,8 @@ file_info process_multiple_files(std::vector<osmium::io::File> const &files,
 
 std::vector<osmium::io::File>
 prepare_input_files(std::vector<std::string> const &input_files,
-                    std::string const &input_format, bool append)
+                    std::string const &input_format, bool append,
+                    bool multiple_versions)
 {
     std::vector<osmium::io::File> files;
 
@@ -322,7 +429,12 @@ prepare_input_files(std::vector<std::string> const &input_files,
             throw fmt_error("Unknown file format '{}'.", input_format);
         }
 
-        if (!append && file.has_multiple_object_versions()) {
+        // A history file may be read by a create with --history, a change
+        // file never.
+        bool const change_file = file.is_true("xml_change_format") ||
+                                 file.is_true("o5c_change_format");
+        if (!append && (change_file || (!multiple_versions &&
+                                        file.has_multiple_object_versions()))) {
             throw std::runtime_error{
                 "Reading an OSM change file only works in append mode."};
         }
@@ -336,15 +448,18 @@ prepare_input_files(std::vector<std::string> const &input_files,
 }
 
 file_info process_files(std::vector<osmium::io::File> const &files,
-                        osmdata_t *osmdata, bool append, bool show_progress)
+                        osmdata_t *osmdata, bool append,
+                        bool multiple_versions, bool show_progress)
 {
     assert(osmdata);
 
     progress_display_t progress{show_progress};
 
     if (files.size() == 1) {
-        return process_single_file(files.front(), osmdata, &progress, append);
+        return process_single_file(files.front(), osmdata, &progress, append,
+                                   multiple_versions);
     }
 
-    return process_multiple_files(files, osmdata, &progress, append);
+    return process_multiple_files(files, osmdata, &progress, append,
+                                  multiple_versions);
 }

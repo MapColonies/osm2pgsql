@@ -20,6 +20,7 @@
 #include "format.hpp"
 #include "logging.hpp"
 #include "middle.hpp"
+#include "node-history.hpp"
 #include "options.hpp"
 #include "osmdata.hpp"
 #include "output.hpp"
@@ -35,7 +36,13 @@ osmdata_t::osmdata_t(std::shared_ptr<middle_t> mid,
     assert(m_mid);
     assert(m_output);
     m_output->start();
+
+    if (!options.append && options.history) {
+        m_node_history = std::make_unique<node_history_t>(options);
+    }
 }
+
+osmdata_t::~osmdata_t() = default;
 
 void osmdata_t::node(osmium::Node const &node)
 {
@@ -51,6 +58,10 @@ void osmdata_t::node(osmium::Node const &node)
     }
 
     m_mid->node(node);
+
+    if (m_node_history && node.visible()) {
+        m_node_history->add(node);
+    }
 
     if (node.deleted()) {
         m_output->node_delete(node);
@@ -72,10 +83,41 @@ void osmdata_t::node(osmium::Node const &node)
     }
 }
 
+void osmdata_t::earlier_version(osmium::OSMObject &object,
+                                osmium::Timestamp valid_to)
+{
+    if (object.type() == osmium::item_type::way) {
+        assert(m_node_history);
+        auto &way = static_cast<osmium::Way &>(object);
+        m_node_history->locate(&way);
+        m_output->way_add_history(&way, valid_to);
+        return;
+    }
+
+    if (object.type() != osmium::item_type::node) {
+        return;
+    }
+
+    auto const &node = static_cast<osmium::Node const &>(object);
+    if (!node.location().valid() ||
+        (m_bbox.valid() && !m_bbox.contains(node.location()))) {
+        return;
+    }
+
+    if (m_node_history) {
+        m_node_history->add(node);
+    }
+    m_output->node_add_history(node, valid_to);
+}
+
 void osmdata_t::after_nodes()
 {
     m_mid->after_nodes();
     m_output->after_nodes();
+
+    if (m_node_history) {
+        m_node_history->after_nodes();
+    }
 
     if (!m_append) {
         return;
@@ -109,6 +151,9 @@ void osmdata_t::way(osmium::Way &way)
             m_changed_ways.push_back(way.id());
         }
     } else {
+        if (m_node_history && m_node_history->needs_latest_ways()) {
+            m_node_history->note_changed_with(way);
+        }
         m_output->way_add(&way);
     }
 }
@@ -117,6 +162,11 @@ void osmdata_t::after_ways()
 {
     m_mid->after_ways();
     m_output->after_ways();
+
+    if (m_node_history) {
+        m_node_history->finish();
+        m_node_history.reset();
+    }
 
     if (!m_append) {
         return;

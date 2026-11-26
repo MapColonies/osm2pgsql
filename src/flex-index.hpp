@@ -28,6 +28,11 @@ public:
 
     std::string columns() const;
 
+    std::vector<std::string> const &column_names() const noexcept
+    {
+        return m_columns;
+    }
+
     /// Set columns (single-column version)
     void set_columns(std::string const &columns)
     {

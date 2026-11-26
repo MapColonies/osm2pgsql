@@ -290,7 +290,7 @@ public:
     int app_define_table()
     {
         return setup_flex_table(m_lua_state.get(), &m_tables, &m_expire_outputs,
-                                m_dbschema, true, m_append);
+                                m_dbschema, true, m_append, false);
     }
 
     int app_define_expire_output()

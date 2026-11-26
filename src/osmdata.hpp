@@ -28,6 +28,7 @@
 #include "pgsql-params.hpp"
 
 class middle_t;
+class node_history_t;
 class output_t;
 struct options_t;
 
@@ -44,9 +45,24 @@ public:
     osmdata_t(std::shared_ptr<middle_t> mid, std::shared_ptr<output_t> output,
               options_t const &options);
 
+    osmdata_t(osmdata_t const &) = delete;
+    osmdata_t &operator=(osmdata_t const &) = delete;
+
+    osmdata_t(osmdata_t &&) = delete;
+    osmdata_t &operator=(osmdata_t &&) = delete;
+
+    ~osmdata_t();
+
     void node(osmium::Node const &node);
     void way(osmium::Way &way);
     void relation(osmium::Relation const &rel);
+
+    /**
+     * Process an earlier version of a node or way on a create from a history
+     * file. It was valid until valid_to, the timestamp of the next version.
+     * A way gets the locations its nodes had at its own timestamp.
+     */
+    void earlier_version(osmium::OSMObject &object, osmium::Timestamp valid_to);
 
     void after_nodes();
     void after_ways();
@@ -107,6 +123,9 @@ private:
 
     std::shared_ptr<middle_t> m_mid;
     std::shared_ptr<output_t> m_output;
+
+    /// Every node version, on a create with --history (else nullptr).
+    std::unique_ptr<node_history_t> m_node_history;
 
     connection_params_t m_connection_params;
 

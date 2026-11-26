@@ -14,6 +14,8 @@
 #include "pgsql.hpp"
 #include "pgsql-params.hpp"
 
+#include <osmium/osm/timestamp.hpp>
+
 #include <cassert>
 #include <cstddef>
 #include <condition_variable>
@@ -46,8 +48,10 @@ public:
     std::string const &name() const noexcept { return m_name; }
     std::string const &id() const noexcept { return m_id; }
     std::string const &rows() const noexcept { return m_rows; }
+    std::string const &history() const noexcept { return m_history; }
 
     void set_rows(std::string rows) { m_rows = std::move(rows); }
+    void set_history(std::string history) { m_history = std::move(history); }
 
     /**
      * Check if the buffer would use exactly the same copy operation.
@@ -68,6 +72,8 @@ private:
     std::string m_id;
     /// Comma-separated list of rows for copy operation (when empty: all rows)
     std::string m_rows;
+    /// Qualified name of the history table (when empty: history disabled)
+    std::string m_history;
 };
 
 /**
@@ -87,6 +93,7 @@ public:
     void add(osmid_t osm_id) { m_deletables.push_back(osm_id); }
 
     void delete_rows(std::string const &table, std::string const &column,
+                     std::string const &history,
                      pg_conn_t const &db_connection);
 
     bool is_full() const noexcept { return m_deletables.size() > MAX_ENTRIES; }
@@ -110,28 +117,39 @@ class db_deleter_by_type_and_id_t
     struct item_t
     {
         osmid_t osm_id;
+        /// Timestamp of the version replacing or deleting the object
+        osmium::Timestamp timestamp;
         char osm_type;
 
-        item_t(char t, osmid_t i) : osm_id(i), osm_type(t) {}
+        item_t(char t, osmid_t i, osmium::Timestamp ts)
+        : osm_id(i), timestamp(ts), osm_type(t)
+        {
+        }
     };
 
 public:
     bool has_data() const noexcept { return !m_deletables.empty(); }
 
-    void add(char type, osmid_t osm_id)
+    void add(char type, osmid_t osm_id, osmium::Timestamp timestamp)
     {
-        m_deletables.emplace_back(type, osm_id);
+        m_deletables.emplace_back(type, osm_id, timestamp);
         if (type != 'X') {
             m_has_type = true;
         }
     }
 
     void delete_rows(std::string const &table, std::string const &column,
+                     std::string const &history,
                      pg_conn_t const &db_connection);
 
     bool is_full() const noexcept { return m_deletables.size() > MAX_ENTRIES; }
 
 private:
+    void move_rows_to_history(std::string const &table,
+                              std::string const &column,
+                              std::string const &history,
+                              pg_conn_t const &db_connection);
+
     /// Vector with object to delete before copying
     std::vector<item_t> m_deletables;
     bool m_has_type = false;
@@ -192,7 +210,7 @@ public:
         if (m_deleter.has_data()) {
             m_deleter.delete_rows(
                 qualified_name(target->schema(), target->name()), target->id(),
-                db_connection);
+                target->history(), db_connection);
         }
     }
 

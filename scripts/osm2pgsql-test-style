@@ -44,9 +44,18 @@ use_step_matcher('re')
 
 OBJECT_ORDER = {'n': 1, 'w': 2, 'r': 3}
 
+def opl_key(line):
+    """ Return (object id, version) of an OPL line. The version is None
+        when the line has none.
+    """
+    parts = line.split(' ', 2)
+    if len(parts) > 1 and parts[1][:1] == 'v':
+        return parts[0], parts[1]
+    return parts[0], None
+
 def opl_sort(line):
-    oid = line.split(' ', 1)[0]
-    return OBJECT_ORDER[oid[0]], int(oid[1:])
+    oid, version = opl_key(line)
+    return OBJECT_ORDER[oid[0]], int(oid[1:]), int(version[1:]) if version else 0
 
 #################### Replication mock ##############################
 
@@ -386,6 +395,12 @@ def delete_table(context, table):
         cur.execute("DROP TABLE " + table)
 
 
+@when("executing the SQL statement (?P<stmt>.+)")
+def execute_sql_statement(context, stmt):
+    with context.db.cursor() as cur:
+        cur.execute(context.sql_statements[stmt])
+
+
 ################### Steps: OSM data ################################
 
 @given("the input file '(?P<osm_file>.+)'")
@@ -699,6 +714,16 @@ def db_table_row_count(context, table, row_num):
            f"Table {table}: expected {row_num} rows, got {res[0]}"
 
 
+@then(r"table (?P<table>.+) is empty")
+def db_table_is_empty(context, table):
+    # Unlike the other table checks, this also applies after a failed run.
+    assert context.table_exists(table), f"Table {table} not found in database."
+
+    query = sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier(*table.split('.', 2)))
+    for res in context.db.execute(query):
+        assert res[0] == 0, f"Table {table}: expected no rows, got {res[0]}"
+
+
 @then("statement (?P<stmt>.+) returns(?P<exact> exactly)?")
 def db_check_table_content(context, stmt, exact):
     context.execute_steps("Then execution is successful")
@@ -733,7 +758,14 @@ class Osm2pgsqlContext(Context):
             self.import_data = {}
         for line in lines:
             if (l := line.strip()):
-                self.import_data[l.split(' ', 1)[0]] = l
+                # A line replaces earlier lines of the same object, except
+                # other versions of it, so that several versions can be given.
+                oid, version = opl_key(l)
+                for key in [k for k in self.import_data
+                            if k[0] == oid and (version is None
+                                                or k[1] in (None, version))]:
+                    del self.import_data[key]
+                self.import_data[(oid, version)] = l
 
     def table_exists(self, table):
         sql_params = table.split('.', 1) if '.' in table else ('public', table)
